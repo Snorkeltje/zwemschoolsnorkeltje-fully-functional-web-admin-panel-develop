@@ -1,0 +1,15 @@
+node_modules
+dist
+.vercel
+.env.local
+.env.production.local
+*.log
+.DS_Store
+
+# Sensitive screenshots/source folder (mobile app dev)
+imagesscreenshotsforclaude/
+
+# Editor
+.vscode
+.idea
+.env
