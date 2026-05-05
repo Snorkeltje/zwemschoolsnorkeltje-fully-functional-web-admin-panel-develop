@@ -5,7 +5,9 @@
   "type": "module",
   "scripts": {
     "build": "vite build",
-    "dev": "vite --port 5173"
+    "dev": "vite --port 5173",
+    "check:icons": "node scripts/check-icons.mjs",
+    "verify": "npm run check:icons && npm run build"
   },
   "dependencies": {
     "@emotion/react": "11.14.0",

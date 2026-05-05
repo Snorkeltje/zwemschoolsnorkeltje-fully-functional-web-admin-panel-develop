@@ -60,9 +60,20 @@ export function AdminLoginScreen() {
       {/* Right login form */}
       <div className="flex-1 flex items-center justify-center p-6">
         <div className="w-full max-w-md space-y-8">
-          <div className="space-y-2 text-center lg:text-left">
-            <h2 className="text-3xl font-bold text-white">Welkom terug</h2>
-            <p className="text-white/60">Log in om uw dashboard te openen</p>
+          {/* Mobile-only mini logo above the heading (also nice extra brand touch on desktop) */}
+          <div className="flex flex-col items-center lg:items-start gap-3">
+            <div className="lg:hidden">
+              <SnorkeltjeLogo />
+            </div>
+            <div className="w-12 h-12 rounded-xl flex items-center justify-center hidden lg:flex"
+                 style={{ background: 'linear-gradient(135deg, #FF5C00 0%, #F5A623 100%)',
+                          boxShadow: '0 8px 24px -8px rgba(255,92,0,0.5)' }}>
+              <span className="text-white font-bold text-xl">S</span>
+            </div>
+            <div className="space-y-2 text-center lg:text-left">
+              <h2 className="text-3xl font-bold text-white">Welkom terug</h2>
+              <p className="text-white/60">Log in om uw dashboard te openen</p>
+            </div>
           </div>
 
           <form onSubmit={onSubmit} className="space-y-5">
@@ -119,8 +130,13 @@ export function AdminLoginScreen() {
           </form>
 
           <div className="text-center text-white/40 text-xs space-y-1">
-            <p>Test-toegang voor development:</p>
-            <p className="font-mono text-white/60">instructeur@test.nl  ·  Test1234!</p>
+            <div className="flex items-center justify-center gap-1.5">
+              <Shield size={12} />
+              <span>Beveiligde admin-toegang</span>
+            </div>
+            <p className="text-white/30">
+              Alleen geautoriseerde beheerders.
+            </p>
           </div>
         </div>
       </div>

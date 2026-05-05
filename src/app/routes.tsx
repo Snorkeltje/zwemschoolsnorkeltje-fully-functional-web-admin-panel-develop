@@ -1,6 +1,7 @@
 import { createBrowserRouter } from "react-router";
 import { PortalScreen } from "./screens/PortalScreen";
 import { SplashScreen } from "./screens/SplashScreen";
+import { MobileInstallScreen } from "./screens/MobileInstallScreen";
 import { OnboardingScreen } from "./screens/OnboardingScreen";
 import { LoginScreen } from "./screens/LoginScreen";
 import { HomeScreen } from "./screens/HomeScreen";
@@ -85,6 +86,7 @@ export const router = createBrowserRouter([
   { path: "/", element: <AdminLoginScreen /> },
   { path: "portal", element: <PortalScreen /> },
   { path: "splash", element: <SplashScreen /> },
+  { path: "mobile-install", element: <MobileInstallScreen /> },
   { path: "onboarding", element: <OnboardingScreen /> },
   { path: "login", element: <LoginScreen /> },
   { path: "forgot-password", element: <ForgotPasswordScreen /> },

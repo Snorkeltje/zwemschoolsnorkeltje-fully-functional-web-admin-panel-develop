@@ -30,40 +30,99 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [profile, setProfile] = useState<AdminProfile | null>(null);
 
   useEffect(() => {
-    // Initial session restore.
-    supabase.auth.getSession().then(async ({ data }) => {
-      setSession(data.session);
-      setUser(data.session?.user ?? null);
-      if (data.session?.user) {
-        const p = await fetchCurrentProfile();
-        setProfile(p as AdminProfile | null);
+    let mounted = true;
+    // Failsafe: never stay on "Laden…" longer than 3s even if Supabase hangs.
+    const failsafe = window.setTimeout(() => {
+      if (mounted) setLoading(false);
+    }, 3000);
+
+    (async () => {
+      try {
+        const { data } = await supabase.auth.getSession();
+        if (!mounted) return;
+        setSession(data.session);
+        setUser(data.session?.user ?? null);
+        if (data.session?.user) {
+          const p = await fetchCurrentProfile();
+          if (!mounted) return;
+          setProfile(p as AdminProfile | null);
+        }
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.warn('Auth init failed:', e);
+      } finally {
+        if (mounted) {
+          window.clearTimeout(failsafe);
+          setLoading(false);
+        }
       }
-      setLoading(false);
-    });
+    })();
 
     // Live auth changes.
     const { data: sub } = supabase.auth.onAuthStateChange(async (_event, sess) => {
+      if (!mounted) return;
       setSession(sess);
       setUser(sess?.user ?? null);
       if (sess?.user) {
-        const p = await fetchCurrentProfile();
-        setProfile(p as AdminProfile | null);
+        try {
+          const p = await fetchCurrentProfile();
+          if (mounted) setProfile(p as AdminProfile | null);
+        } catch (e) {
+          // eslint-disable-next-line no-console
+          console.warn('Profile fetch failed:', e);
+        }
       } else {
         setProfile(null);
       }
     });
-    return () => sub.subscription.unsubscribe();
+    return () => {
+      mounted = false;
+      window.clearTimeout(failsafe);
+      sub.subscription.unsubscribe();
+    };
   }, []);
 
   const signIn = async (email: string, password: string) => {
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
     if (error) return { error: friendly(error.message) };
+    if (!data.session) return { error: 'Geen sessie ontvangen — probeer opnieuw.' };
+    // Walter 2026-05-01: only admin users may access the dashboard.
+    // Reject parent / instructor sign-ins immediately and clear the session.
+    try {
+      const p = await fetchCurrentProfile() as AdminProfile | null;
+      if (!p || p.role !== 'admin') {
+        await supabase.auth.signOut();
+        return { error: 'Alleen beheerders mogen inloggen op het dashboard.' };
+      }
+      setProfile(p);
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.warn('Role check after sign-in failed:', e);
+      await supabase.auth.signOut();
+      return { error: 'Profiel kon niet worden geladen — probeer opnieuw.' };
+    }
     return {};
   };
 
   const signOut = async () => {
-    await supabase.auth.signOut();
+    try {
+      await supabase.auth.signOut({ scope: 'local' });
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.warn('signOut error:', e);
+    }
+    setSession(null);
+    setUser(null);
     setProfile(null);
+    // Hard-clear any cached supabase auth artifacts in localStorage so a
+    // refresh definitely lands the user back on the login screen.
+    try {
+      Object.keys(window.localStorage)
+        .filter(k => k.startsWith('sb-') || k.includes('supabase'))
+        .forEach(k => window.localStorage.removeItem(k));
+    } catch { /* localStorage may be unavailable in private mode */ }
+    // Replace history so back-button cannot return to a protected page.
+    window.location.replace('/');
   };
 
   return (
