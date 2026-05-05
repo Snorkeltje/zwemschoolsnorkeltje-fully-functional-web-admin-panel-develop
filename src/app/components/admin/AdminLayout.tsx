@@ -1,32 +1,56 @@
-import { useState, ReactNode } from 'react';
+import { useState, ReactNode, Component } from 'react';
 import { useNavigate } from 'react-router';
 import {
   LayoutDashboard, Users, Calendar, FileText, CreditCard, DollarSign,
   ClipboardList, UserCheck, Grid3X3, MessageSquare, Bell, Settings,
   MapPin, BarChart3, ChevronDown, ChevronRight, Menu, X, LogOut,
   Search, ChevronLeft, Waves, UserCog, Shield, Globe, Smartphone,
-  HelpCircle, Maximize2, Moon, Sun
+  HelpCircle, Maximize2, Moon, Sun,
+  AlertTriangle, RefreshCw,
+  // Walter 2026-04-28 — extra admin pages required
+  GraduationCap, Star, BookOpen, Plane, ListChecks, Megaphone, Wallet,
 } from 'lucide-react';
 import snorkeltjeLogo from '../../../imports/logo-3.svg';
 import snorkeltjeLogoPng from 'figma:asset/9b639bb791c2a6aa104eacafd5c0253b9d1ddf3e.png';
 import snorkeltjeMascot from 'figma:asset/9e42bfdd73fd962b6a8fec73f33768136284d03f.png';
+import { useAdminNotifications } from '../../../lib/hooks/useAdmin';
+import { markAllNotificationsRead, markNotificationRead } from '../../../lib/data/admin-repository';
+
+function relativeTime(iso: string): string {
+  const diffMs = Date.now() - new Date(iso).getTime();
+  const sec = Math.max(1, Math.floor(diffMs / 1000));
+  if (sec < 60) return `${sec} sec geleden`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min} min geleden`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr} uur geleden`;
+  const days = Math.floor(hr / 24);
+  if (days < 7) return `${days} dag${days === 1 ? '' : 'en'} geleden`;
+  return new Date(iso).toLocaleDateString('nl-NL');
+}
 
 export type AdminView =
   | 'dashboard'
   | 'customers' | 'customer-new' | 'customer-detail'
   | 'reservations' | 'reservation-new' | 'reservation-detail'
-  | 'calendar' | 'roster'
+  | 'calendar' | 'roster' | 'fixed-schedule'
   | 'invoices' | 'invoice-new' | 'invoice-detail' | 'invoice-history' | 'open-items'
-  | 'punch-cards' | 'punch-card-detail'
+  | 'punch-cards' | 'punch-card-detail' | 'wallets'
   | 'payments'
   | 'tasks'
   | 'registrations'
-  | 'instructors' | 'instructor-detail'
+  | 'instructors' | 'instructor-detail' | 'vacation-requests'
+  | 'children' | 'child-progress'
   | 'locations'
   | 'messages'
-  | 'notifications-admin'
+  | 'notifications-admin' | 'announcements'
   | 'reports'
-  | 'settings' | 'devices' | 'profile-admin';
+  | 'settings' | 'devices' | 'profile-admin' | 'help-support'
+  // Walter 2026-04-28 additions
+  | 'waitlist' | 'slot-interest'
+  | 'exams' | 'exam-continuation'
+  | 'reviews' | 'review-approval'
+  | 'curriculum' | 'curriculum-editor';
 
 interface NavItem {
   id: string;
@@ -34,56 +58,107 @@ interface NavItem {
   icon: any;
   view?: AdminView;
   badge?: number;
-  /// Walter 2026-04-26: only Dashboard is enabled while admin is being built.
   /// Disabled items show a "Binnenkort" badge and do nothing on click.
   disabled?: boolean;
-  children?: { label: string; view: AdminView; badge?: number; disabled?: boolean }[];
+  /// "Work in progress" — shows an "In ontwikkeling" badge but the item is
+  /// still clickable. Use this to signal that a page is still being built
+  /// while letting the client preview what's there.
+  wip?: boolean;
+  children?: { label: string; view: AdminView; badge?: number; disabled?: boolean; wip?: boolean }[];
 }
 
 const navItems: NavItem[] = [
+  // === DASHBOARD ===
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, view: 'dashboard' },
+
+  // === CUSTOMERS ===
   {
-    id: 'customers', label: 'Klanten', icon: Users, disabled: true, children: [
-      { label: 'Overzicht', view: 'customers', disabled: true },
-      { label: 'Nieuwe klant', view: 'customer-new', disabled: true },
-      { label: 'Registratie verzoeken', view: 'registrations', badge: 3, disabled: true },
+    id: 'customers', label: 'Klanten', icon: Users, children: [
+      { label: 'Overzicht', view: 'customers' },
+      { label: 'Voortgang per kind', view: 'child-progress' },
+      { label: 'Nieuwe klant', view: 'customer-new' },
+      { label: 'Registratie verzoeken', view: 'registrations' },
+    ]
+  },
+
+  // === RESERVATIONS + SCHEDULE ===
+  {
+    id: 'reservations', label: 'Reserveringen', icon: Calendar, children: [
+      { label: 'Overzicht', view: 'reservations' },
+      { label: 'Nieuwe reservering', view: 'reservation-new' },
+      { label: 'Kalender (week)', view: 'calendar' },
+      { label: 'Rooster (dag)', view: 'roster' },
+      { label: 'Vast rooster (Excel)', view: 'fixed-schedule' },
     ]
   },
   {
-    id: 'reservations', label: 'Reserveringen', icon: Calendar, disabled: true, children: [
-      { label: 'Overzicht', view: 'reservations', disabled: true },
-      { label: 'Nieuwe reservering', view: 'reservation-new', disabled: true },
-      { label: 'Kalender', view: 'calendar', disabled: true },
-      { label: 'Rooster', view: 'roster', disabled: true },
+    id: 'waitlist', label: 'Wachtlijst', icon: ListChecks, children: [
+      { label: 'Overzicht', view: 'waitlist' },
+      { label: 'Slot-interesses', view: 'slot-interest' },
+    ]
+  },
+
+  // === EXAMS / DIPLOMAS / REVIEWS ===
+  {
+    id: 'exams', label: 'Examens', icon: GraduationCap, children: [
+      { label: 'Examenkandidaten', view: 'exams' },
+      { label: 'Vervolg-aanvragen (24h)', view: 'exam-continuation' },
     ]
   },
   {
-    id: 'invoices', label: 'Facturatie', icon: FileText, disabled: true, children: [
-      { label: 'Overzicht', view: 'invoices', disabled: true },
-      { label: 'Nieuwe factuur', view: 'invoice-new', disabled: true },
-      { label: 'Factuur historie', view: 'invoice-history', disabled: true },
-      { label: 'Openstaande posten', view: 'open-items', disabled: true },
+    id: 'reviews', label: 'Beoordelingen', icon: Star, children: [
+      { label: 'Alle reviews', view: 'reviews' },
+      { label: 'Te modereren (<6)', view: 'review-approval' },
     ]
   },
-  { id: 'punch-cards', label: 'Knipkaarten', icon: CreditCard, view: 'punch-cards', disabled: true },
-  { id: 'payments', label: 'Betalingen', icon: DollarSign, view: 'payments', disabled: true },
-  { id: 'tasks', label: 'Taken', icon: ClipboardList, view: 'tasks', badge: 5, disabled: true },
-  { id: 'instructors', label: 'Instructeurs', icon: UserCog, view: 'instructors', disabled: true },
-  { id: 'locations', label: 'Locaties', icon: MapPin, view: 'locations', disabled: true },
-  { id: 'messages', label: 'Berichten', icon: MessageSquare, view: 'messages', badge: 12, disabled: true },
-  { id: 'reports', label: 'Rapporten', icon: BarChart3, view: 'reports', disabled: true },
-  { id: 'settings', label: 'Instellingen', icon: Settings, view: 'settings', disabled: true },
+
+  // === FINANCE ===
+  {
+    id: 'invoices', label: 'Facturatie', icon: FileText, children: [
+      { label: 'Overzicht', view: 'invoices' },
+      { label: 'Nieuwe factuur', view: 'invoice-new' },
+      { label: 'Factuur historie', view: 'invoice-history' },
+      { label: 'Openstaande posten', view: 'open-items' },
+    ]
+  },
+  { id: 'wallets', label: 'Tegoed / Wallets', icon: Wallet, view: 'wallets' },
+  { id: 'payments', label: 'Betalingen', icon: DollarSign, view: 'payments' },
+
+  // === OPERATIONS ===
+  { id: 'tasks', label: 'Taken', icon: ClipboardList, view: 'tasks' },
+  {
+    id: 'staff', label: 'Personeel', icon: UserCog, children: [
+      { label: 'Instructeurs', view: 'instructors' },
+      { label: 'Vakantieaanvragen', view: 'vacation-requests' },
+    ]
+  },
+  { id: 'locations', label: 'Locaties', icon: MapPin, view: 'locations' },
+
+  // === CONTENT ===
+  { id: 'curriculum', label: 'Lesplan', icon: BookOpen, view: 'curriculum' },
+
+  // === COMMUNICATION ===
+  {
+    id: 'communication', label: 'Communicatie', icon: MessageSquare, children: [
+      { label: 'Berichten met ouders', view: 'messages' },
+      { label: 'Notificaties versturen', view: 'announcements' },
+    ]
+  },
+
+  // === REPORTS / SETTINGS ===
+  { id: 'reports', label: 'Rapporten', icon: BarChart3, view: 'reports' },
+  { id: 'settings', label: 'Instellingen', icon: Settings, view: 'settings' },
 ];
 
 interface AdminLayoutProps {
   children: ReactNode;
   currentView: AdminView;
   onNavigate: (view: AdminView) => void;
-  notifications?: number;
   onSearch?: (query: string) => void;
 }
 
-export function AdminLayout({ children, currentView, onNavigate, notifications = 8, onSearch }: AdminLayoutProps) {
+export function AdminLayout({ children, currentView, onNavigate, onSearch }: AdminLayoutProps) {
+  const { data: notifList, unreadCount: notifications, refresh: refreshNotifs } = useAdminNotifications();
   const navigate = useNavigate();
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -149,6 +224,7 @@ export function AdminLayout({ children, currentView, onNavigate, notifications =
                         <span className="px-1.5 py-0.5 rounded-full bg-white/10 text-white/60" style={{ fontSize: 9, fontWeight: 700 }}>Binnenkort</span>
                       ) : (
                         <>
+                          {item.wip && <span className="px-1.5 py-0.5 rounded-full bg-[#F5A623]/20 text-[#F5A623]" style={{ fontSize: 9, fontWeight: 700 }}>In ontwikkeling</span>}
                           {totalBadge > 0 && <span className="px-1.5 py-0.5 rounded-full bg-[#FF5C00] text-white" style={{ fontSize: 10, fontWeight: 700 }}>{totalBadge}</span>}
                           <ChevronDown size={14} className={`transition-transform flex-shrink-0 ${expanded ? 'rotate-180' : ''}`} style={{ opacity: 0.5 }} />
                         </>
@@ -169,7 +245,9 @@ export function AdminLayout({ children, currentView, onNavigate, notifications =
                         <span>{child.label}</span>
                         {child.disabled
                           ? <span className="px-1.5 py-0.5 rounded-full bg-white/10 text-white/50" style={{ fontSize: 9, fontWeight: 700 }}>Binnenkort</span>
-                          : (child.badge ? <span className="px-1.5 py-0.5 rounded-full bg-[#FF5C00] text-white" style={{ fontSize: 9, fontWeight: 700 }}>{child.badge}</span> : null)}
+                          : child.wip
+                            ? <span className="px-1.5 py-0.5 rounded-full bg-[#F5A623]/20 text-[#F5A623]" style={{ fontSize: 9, fontWeight: 700 }}>In ontwikkeling</span>
+                            : (child.badge ? <span className="px-1.5 py-0.5 rounded-full bg-[#FF5C00] text-white" style={{ fontSize: 9, fontWeight: 700 }}>{child.badge}</span> : null)}
                       </button>
                     ))}
                   </div>
@@ -191,7 +269,9 @@ export function AdminLayout({ children, currentView, onNavigate, notifications =
                   <span className="flex-1 text-left truncate" style={{ fontSize: 13, fontWeight: active ? 600 : 500 }}>{item.label}</span>
                   {item.disabled
                     ? <span className="px-1.5 py-0.5 rounded-full bg-white/10 text-white/60" style={{ fontSize: 9, fontWeight: 700 }}>Binnenkort</span>
-                    : (item.badge ? <span className="px-1.5 py-0.5 rounded-full bg-[#FF5C00] text-white" style={{ fontSize: 10, fontWeight: 700 }}>{item.badge}</span> : null)}
+                    : item.wip
+                      ? <span className="px-1.5 py-0.5 rounded-full bg-[#F5A623]/20 text-[#F5A623]" style={{ fontSize: 9, fontWeight: 700 }}>In ontwikkeling</span>
+                      : (item.badge ? <span className="px-1.5 py-0.5 rounded-full bg-[#FF5C00] text-white" style={{ fontSize: 10, fontWeight: 700 }}>{item.badge}</span> : null)}
                 </>
               )}
             </button>
@@ -199,16 +279,17 @@ export function AdminLayout({ children, currentView, onNavigate, notifications =
         })}
       </nav>
 
-      {/* Bottom links — disabled while admin is being built */}
+      {/* Bottom links */}
       <div className="border-t border-white/10 p-3 space-y-0.5">
-        <button disabled className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-white/30 cursor-not-allowed">
-          <Globe size={16} />{sidebarOpen && <span style={{ fontSize: 12 }}>Website — Binnenkort</span>}
+        <button onClick={() => navigate('/')} className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-white/40 hover:text-white/80 hover:bg-white/5 transition-all">
+          <Globe size={16} />{sidebarOpen && <span style={{ fontSize: 12 }}>Website</span>}
         </button>
-        <button disabled className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-white/30 cursor-not-allowed">
-          <Smartphone size={16} />{sidebarOpen && <span style={{ fontSize: 12 }}>Mobile App — Binnenkort</span>}
+        <button onClick={() => navigate('/mobile-install')} className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-white/40 hover:text-white/80 hover:bg-white/5 transition-all">
+          <Smartphone size={16} />{sidebarOpen && <span style={{ fontSize: 12 }}>Mobile App installeren</span>}
         </button>
-        <button disabled className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-white/30 cursor-not-allowed">
-          <HelpCircle size={16} />{sidebarOpen && <span style={{ fontSize: 12 }}>Help — Binnenkort</span>}
+        <button onClick={() => onNavigate('help-support')} className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-white/40 hover:text-white/80 hover:bg-white/5 transition-all">
+          <HelpCircle size={16} />
+          {sidebarOpen && <span style={{ fontSize: 12 }}>Help & Support</span>}
         </button>
       </div>
 
@@ -253,24 +334,22 @@ export function AdminLayout({ children, currentView, onNavigate, notifications =
               {sidebarOpen ? <ChevronLeft size={18} /> : <Menu size={18} />}
             </button>
 
-            {/* Search — disabled while admin is being built */}
-            <div className="flex-1 max-w-[480px]">
+            {/* Search */}
+            <form onSubmit={handleSearch} className="flex-1 max-w-[480px]">
               <div className="relative">
                 <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-[#A0AEC0]" />
                 <input
-                  disabled
-                  placeholder="Zoeken — Binnenkort beschikbaar"
-                  className="w-full pl-10 pr-4 py-2 rounded-lg bg-[#F4F7FC] border border-transparent text-[#A0AEC0] placeholder:text-[#A0AEC0] opacity-60 cursor-not-allowed"
+                  value={searchQuery} onChange={e => setSearchQuery(e.target.value)}
+                  placeholder="Zoek klant, reservering, factuur..."
+                  className="w-full pl-10 pr-4 py-2 rounded-lg bg-[#F4F7FC] border border-transparent focus:border-[#0365C4] outline-none text-[#1A1A2E] placeholder:text-[#A0AEC0]"
                   style={{ fontSize: 13 }}
                 />
               </div>
-            </div>
+            </form>
 
             <div className="flex items-center gap-1.5 ml-auto">
-              {/* Quick actions — disabled while admin is being built */}
-              <button disabled title="Binnenkort beschikbaar"
-                className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-white opacity-50 cursor-not-allowed"
-                style={{ background: '#0365C4', fontSize: 12, fontWeight: 600 }}>
+              {/* Quick actions */}
+              <button onClick={() => onNavigate('reservation-new')} className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-white hover:opacity-90 transition-all" style={{ background: '#0365C4', fontSize: 12, fontWeight: 600 }}>
                 + Reservering
               </button>
 
@@ -286,30 +365,50 @@ export function AdminLayout({ children, currentView, onNavigate, notifications =
                     <div className="absolute right-0 top-full mt-2 w-[340px] bg-white rounded-xl shadow-xl z-50" style={{ border: '1px solid #E8ECF4' }}>
                       <div className="px-4 py-3 border-b border-[#F0F4FA] flex items-center justify-between">
                         <h4 className="text-[#1A1A2E]" style={{ fontSize: 14, fontWeight: 700 }}>Notificaties</h4>
-                        <button className="text-[#0365C4]" style={{ fontSize: 12 }}>Alles gelezen</button>
+                        <button
+                          onClick={async () => { await markAllNotificationsRead(); await refreshNotifs(); }}
+                          disabled={notifications === 0}
+                          className="text-[#0365C4] disabled:text-[#A0AEC0] disabled:cursor-not-allowed"
+                          style={{ fontSize: 12 }}
+                        >
+                          Alles gelezen
+                        </button>
                       </div>
                       <div className="max-h-[300px] overflow-y-auto">
-                        {[
-                          { title: 'Nieuwe registratie', desc: 'Emma de Vries heeft een account aangevraagd', time: '2 min geleden', color: '#FF5C00' },
-                          { title: 'Reservering geannuleerd', desc: 'RES-2026-0451 is geannuleerd door klant', time: '15 min geleden', color: '#E74C3C' },
-                          { title: 'Knipkaart besteld', desc: 'KNP-3089 — 10x 1-op-1 — €380,00', time: '1 uur geleden', color: '#27AE60' },
-                          { title: 'Betaling ontvangen', desc: 'Mollie betaling €380,00 van Walter VdG', time: '2 uur geleden', color: '#0365C4' },
-                          { title: 'Taak deadline', desc: 'Factuur FIN-2026-445 verlopen', time: '3 uur geleden', color: '#E67E22' },
-                        ].map((n, i) => (
-                          <div key={i} className="px-4 py-3 hover:bg-[#F8FAFC] border-b border-[#F0F4FA] last:border-0 cursor-pointer">
-                            <div className="flex items-start gap-2.5">
-                              <div className="w-2 h-2 rounded-full mt-1.5 flex-shrink-0" style={{ background: n.color }} />
-                              <div className="min-w-0">
-                                <p className="text-[#1A1A2E] truncate" style={{ fontSize: 13, fontWeight: 600 }}>{n.title}</p>
-                                <p className="text-[#6B7B94] truncate" style={{ fontSize: 12 }}>{n.desc}</p>
-                                <p className="text-[#A0AEC0] mt-0.5" style={{ fontSize: 11 }}>{n.time}</p>
-                              </div>
-                            </div>
+                        {notifList.length === 0 ? (
+                          <div className="px-4 py-8 text-center">
+                            <Bell size={24} className="text-[#C4CDD9] mx-auto mb-2" />
+                            <p className="text-[#6B7B94]" style={{ fontSize: 13, fontWeight: 600 }}>Geen notificaties</p>
+                            <p className="text-[#A0AEC0] mt-0.5" style={{ fontSize: 11 }}>
+                              Je bent helemaal bij. Nieuwe meldingen verschijnen hier real-time.
+                            </p>
                           </div>
-                        ))}
+                        ) : (
+                          notifList.map(n => (
+                            <button
+                              key={n.id}
+                              onClick={async () => {
+                                if (!n.read) { await markNotificationRead(n.id); await refreshNotifs(); }
+                              }}
+                              className={`w-full text-left px-4 py-3 hover:bg-[#F8FAFC] border-b border-[#F0F4FA] last:border-0 transition-colors ${n.read ? '' : 'bg-[#F0F8FF]'}`}
+                            >
+                              <div className="flex items-start gap-2.5">
+                                <div
+                                  className="w-2 h-2 rounded-full mt-1.5 flex-shrink-0"
+                                  style={{ background: n.read ? '#C4CDD9' : '#FF5C00' }}
+                                />
+                                <div className="min-w-0 flex-1">
+                                  <p className="text-[#1A1A2E] truncate" style={{ fontSize: 13, fontWeight: n.read ? 500 : 700 }}>{n.title}</p>
+                                  <p className="text-[#6B7B94]" style={{ fontSize: 12, lineHeight: 1.4 }}>{n.body}</p>
+                                  <p className="text-[#A0AEC0] mt-0.5" style={{ fontSize: 11 }}>{relativeTime(n.createdAt)}</p>
+                                </div>
+                              </div>
+                            </button>
+                          ))
+                        )}
                       </div>
                       <div className="px-4 py-2.5 border-t border-[#F0F4FA] text-center">
-                        <button disabled className="text-[#0365C4] opacity-40 cursor-not-allowed" style={{ fontSize: 12, fontWeight: 600 }}>Alle notificaties — Binnenkort</button>
+                        <button onClick={() => { onNavigate('notifications-admin'); setShowNotifPanel(false); }} className="text-[#0365C4]" style={{ fontSize: 12, fontWeight: 600 }}>Alle notificaties bekijken</button>
                       </div>
                     </div>
                   </>
@@ -330,9 +429,9 @@ export function AdminLayout({ children, currentView, onNavigate, notifications =
                         <p className="text-[#1A1A2E]" style={{ fontSize: 13, fontWeight: 600 }}>Walter Van De Geest</p>
                         <p className="text-[#A0AEC0]" style={{ fontSize: 11 }}>Super Admin</p>
                       </div>
-                      <button disabled className="w-full text-left px-4 py-2 text-[#4A5568] opacity-40 cursor-not-allowed flex items-center gap-2" style={{ fontSize: 13 }}><Shield size={14} /> Profiel <span className="ml-auto text-[10px]">Binnenkort</span></button>
-                      <button disabled className="w-full text-left px-4 py-2 text-[#4A5568] opacity-40 cursor-not-allowed flex items-center gap-2" style={{ fontSize: 13 }}><Smartphone size={14} /> Apparaten <span className="ml-auto text-[10px]">Binnenkort</span></button>
-                      <button disabled className="w-full text-left px-4 py-2 text-[#4A5568] opacity-40 cursor-not-allowed flex items-center gap-2" style={{ fontSize: 13 }}><Settings size={14} /> Instellingen <span className="ml-auto text-[10px]">Binnenkort</span></button>
+                      <button onClick={() => { onNavigate('profile-admin'); setShowUserMenu(false); }} className="w-full text-left px-4 py-2 hover:bg-[#F4F7FC] text-[#4A5568] flex items-center gap-2" style={{ fontSize: 13 }}><Shield size={14} /> Profiel</button>
+                      <button onClick={() => { onNavigate('devices'); setShowUserMenu(false); }} className="w-full text-left px-4 py-2 hover:bg-[#F4F7FC] text-[#4A5568] flex items-center gap-2" style={{ fontSize: 13 }}><Smartphone size={14} /> Apparaten</button>
+                      <button onClick={() => { onNavigate('settings'); setShowUserMenu(false); }} className="w-full text-left px-4 py-2 hover:bg-[#F4F7FC] text-[#4A5568] flex items-center gap-2" style={{ fontSize: 13 }}><Settings size={14} /> Instellingen</button>
                       <div className="border-t border-[#F0F4FA]" />
                       <button onClick={() => navigate('/')} className="w-full text-left px-4 py-2 hover:bg-[#FEF2F2] text-[#E74C3C] flex items-center gap-2" style={{ fontSize: 13 }}><LogOut size={14} /> Uitloggen</button>
                     </div>
@@ -345,7 +444,9 @@ export function AdminLayout({ children, currentView, onNavigate, notifications =
 
         {/* Content */}
         <main className="flex-1 p-4 sm:p-6 overflow-auto">
-          {children}
+          <PageErrorBoundary key={currentView}>
+            {children}
+          </PageErrorBoundary>
         </main>
 
         {/* Footer */}
@@ -360,4 +461,50 @@ export function AdminLayout({ children, currentView, onNavigate, notifications =
       </div>
     </div>
   );
+}
+
+/// Per-page error boundary inside AdminLayout.
+/// When one page throws, the sidebar / nav stays usable so the user can pick
+/// another page. Resets automatically when `key` (= currentView) changes.
+class PageErrorBoundary extends Component<{ children: ReactNode }, { hasError: boolean; error: Error | null }> {
+  state = { hasError: false, error: null as Error | null };
+  static getDerivedStateFromError(error: Error) { return { hasError: true, error }; }
+  componentDidCatch(error: Error, info: { componentStack?: string }) {
+    // eslint-disable-next-line no-console
+    console.error('[PageErrorBoundary]', error, info?.componentStack);
+  }
+  render() {
+    if (!this.state.hasError) return this.props.children;
+    const isProd = import.meta.env.MODE === 'production';
+    return (
+      <div className="max-w-2xl mx-auto p-8 mt-12 rounded-2xl"
+           style={{ background: 'white', boxShadow: '0 8px 32px rgba(0,0,0,0.08)', border: '1px solid #FECACA' }}>
+        <div className="flex items-start gap-4">
+          <div className="w-12 h-12 rounded-xl flex items-center justify-center flex-shrink-0"
+               style={{ background: '#FEF2F2' }}>
+            <AlertTriangle size={22} className="text-[#E74C3C]" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <h2 className="text-[#1A1A2E] mb-1" style={{ fontSize: 18, fontWeight: 800 }}>Deze pagina kon niet worden geladen</h2>
+            <p className="text-[#6B7B94]" style={{ fontSize: 13 }}>
+              Een onverwachte fout op deze pagina. De rest van het dashboard werkt normaal — gebruik de zijbalk om door te gaan.
+            </p>
+            {!isProd && this.state.error && (
+              <p className="mt-3 p-2 rounded text-[#991B1B] font-mono break-all"
+                 style={{ background: '#FEF2F2', fontSize: 11, lineHeight: 1.4 }}>
+                {this.state.error.name}: {this.state.error.message}
+              </p>
+            )}
+            <button
+              onClick={() => this.setState({ hasError: false, error: null })}
+              className="mt-4 flex items-center gap-1.5 px-4 py-2 rounded-lg text-white"
+              style={{ fontSize: 13, fontWeight: 600, background: '#0365C4' }}
+            >
+              <RefreshCw size={14} /> Probeer opnieuw
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 }
