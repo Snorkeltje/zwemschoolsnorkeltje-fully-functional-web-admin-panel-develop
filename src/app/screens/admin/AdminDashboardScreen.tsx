@@ -58,9 +58,10 @@ import {
   useWaitlist,
   useWallets,
 } from '../../../lib/hooks/useAdmin';
-import { broadcastNotification, createCustomerViaEdgeFn, createReservationFromForm, decideVacationRequest, deleteCustomer, markAllNotificationsRead, markNotificationRead, respondToReview, updateCustomerProfile, upsertChildPhase } from '../../../lib/data/admin-repository';
+import { broadcastNotification, createCustomerViaEdgeFn, createReservationFromForm, decideVacationRequest, deleteCustomer, deleteWaitlistEntry, deriveChildLevel, isStepCompleteForUnlock, markAllNotificationsRead, markNotificationRead, respondToReview, updateCustomerProfile, upsertChildPhase } from '../../../lib/data/admin-repository';
 import type { AdminCustomer } from '../../../lib/data/admin-repository';
 import { CurriculumStepCard } from '../../components/admin/CurriculumStepCard';
+import { exportToXlsx, tintHex } from '../../../lib/utils/xlsx-export';
 
 // Suppress recharts internal duplicate key warning (title/desc siblings in Surface SVG)
 const _origWarn = console.error;
@@ -242,11 +243,11 @@ interface Registration {
 }
 
 const mockRegistrations: Registration[] = [
-  { id: 'REG-101', parentName: 'Anna Konings', childName: 'Lucas Konings', email: 'anna@example.nl', phone: '+31 6 11223344', requestDate: '25-03-2026', preferredLocation: 'Nijkerk', preferredType: '1-op-1', status: 'Nieuw', notes: 'Via website aanmelding' },
-  { id: 'REG-102', parentName: 'Peter Hendriks', childName: 'Eva Hendriks', email: 'peter@example.nl', phone: '+31 6 22334455', requestDate: '24-03-2026', preferredLocation: 'De Bilt', preferredType: '1-op-2', status: 'Nieuw', notes: 'Via website aanmelding' },
-  { id: 'REG-103', parentName: 'Sandra Meijer', childName: 'Tom Meijer', email: 'sandra@example.nl', phone: '+31 6 33445566', requestDate: '23-03-2026', preferredLocation: 'Garderen', preferredType: '1-op-1', status: 'Nieuw', notes: 'Doorverwijzing van klant KL-1001' },
-  { id: 'REG-104', parentName: 'Mark de Wit', childName: 'Sara de Wit', email: 'mark@example.nl', phone: '+31 6 44556677', requestDate: '20-03-2026', preferredLocation: 'Dordrecht', preferredType: '1-op-2', status: 'Goedgekeurd', notes: 'Account is aangemaakt' },
-  { id: 'REG-105', parentName: 'Bas Vink', childName: 'Lotte Vink', email: 'bas@example.nl', phone: '+31 6 55667788', requestDate: '18-03-2026', preferredLocation: 'Wolfheze', preferredType: '1-op-1', status: 'Afgewezen', notes: 'Geen plek beschikbaar in Wolfheze' },
+  { id: 'REG-101', parentName: 'Anna Konings', childName: 'Lucas Konings', email: 'anna@example.nl', phone: '+31 6 11223344', requestDate: '25-03-2026', preferredLocation: 'Nijkerk', preferredType: 'Privéles', status: 'Nieuw', notes: 'Via website aanmelding' },
+  { id: 'REG-102', parentName: 'Peter Hendriks', childName: 'Eva Hendriks', email: 'peter@example.nl', phone: '+31 6 22334455', requestDate: '24-03-2026', preferredLocation: 'De Bilt', preferredType: 'Duoles', status: 'Nieuw', notes: 'Via website aanmelding' },
+  { id: 'REG-103', parentName: 'Sandra Meijer', childName: 'Tom Meijer', email: 'sandra@example.nl', phone: '+31 6 33445566', requestDate: '23-03-2026', preferredLocation: 'Garderen', preferredType: 'Privéles', status: 'Nieuw', notes: 'Doorverwijzing van klant KL-1001' },
+  { id: 'REG-104', parentName: 'Mark de Wit', childName: 'Sara de Wit', email: 'mark@example.nl', phone: '+31 6 44556677', requestDate: '20-03-2026', preferredLocation: 'Dordrecht', preferredType: 'Duoles', status: 'Goedgekeurd', notes: 'Account is aangemaakt' },
+  { id: 'REG-105', parentName: 'Bas Vink', childName: 'Lotte Vink', email: 'bas@example.nl', phone: '+31 6 55667788', requestDate: '18-03-2026', preferredLocation: 'Wolfheze', preferredType: 'Privéles', status: 'Afgewezen', notes: 'Geen plek beschikbaar in Wolfheze' },
 ];
 
 interface Instructor {
@@ -1269,7 +1270,30 @@ export function AdminDashboardScreen() {
   const [newCustomerErrors, setNewCustomerErrors] = useState<Record<string, string>>({});
   const [newCustomerSubmitting, setNewCustomerSubmitting] = useState(false);
 
-  // Live Supabase-backed data for the Dashboard view.
+  // ─── Performance: gate each hook by whether the current view actually
+  // needs its data. On login the user lands on 'dashboard' — so all
+  // sidebar hooks stay dormant and no unbounded queries fire until the
+  // user navigates. Each hook caches its result, so revisiting a view is
+  // instant (no re-fetch).
+  const needCustomers = view === 'customers' || view === 'customer-new' || view === 'customer-detail'
+    || view === 'reservation-new' || view === 'child-progress';
+  const needReservations = view === 'reservations' || view === 'reservation-detail'
+    || view === 'calendar' || view === 'roster' || view === 'fixed-schedule';
+  const needLocations = needReservations || view === 'locations' || view === 'reservation-new';
+  const needInstructors = view === 'instructors' || view === 'instructor-detail'
+    || view === 'vacation-requests' || view === 'roster' || view === 'calendar' || view === 'reservation-new';
+  const needWaitlist = view === 'waitlist' || view === 'slot-interest';
+  const needInvoices = view === 'invoices' || view === 'invoice-detail'
+    || view === 'invoice-history' || view === 'open-items' || view === 'invoice-new';
+  const needPayments = view === 'payments';
+  const needWallets = view === 'wallets' || view === 'punch-cards' || view === 'punch-card-detail';
+  const needReviews = view === 'reviews' || view === 'review-approval';
+  const needExams = view === 'exams' || view === 'exam-continuation';
+  const needChildren = view === 'child-progress' || view === 'children';
+  const needSkills = view === 'curriculum' || view === 'curriculum-editor' || needChildren;
+  const needVacations = view === 'vacation-requests' || view === 'dashboard';
+
+  // Dashboard view hooks — always load on mount (the landing view).
   const stats = useDashboardStats();
   const trends = useDashboardTrends();
   const reservations30 = useReservations30Days();
@@ -1282,22 +1306,22 @@ export function AdminDashboardScreen() {
   const pendingRegs = usePendingRegistrations();
   const adminTasks = usePendingAdminTasks();
 
-  // Live Supabase-backed data for sidebar pages.
-  const customers = useCustomers();
-  const reservationsAll = useAllReservations();
-  const locationsList = useLocationsList();
-  const instructorsList = useInstructors();
-  const wallets = useWallets();
-  const reviewsList = useAllReviews();
-  const waitlist = useWaitlist();
-  const examCandidates = useExamCandidates();
-  const waitlistOffers = useWaitlistOffers();
-  const allInvoices = useAllInvoices();
-  const allPayments = useAllPayments();
-  const vacations = useVacationRequests();
-  const skills = useSkills();
-  const curriculum = useCurriculum();
-  const allChildren = useAllChildren();
+  // Sidebar view hooks — deferred until the corresponding view is opened.
+  const customers = useCustomers(needCustomers);
+  const reservationsAll = useAllReservations(needReservations);
+  const locationsList = useLocationsList(needLocations);
+  const instructorsList = useInstructors(needInstructors);
+  const wallets = useWallets(needWallets);
+  const reviewsList = useAllReviews(needReviews);
+  const waitlist = useWaitlist(needWaitlist);
+  const examCandidates = useExamCandidates(needExams);
+  const waitlistOffers = useWaitlistOffers(needWaitlist);
+  const allInvoices = useAllInvoices(needInvoices);
+  const allPayments = useAllPayments(needPayments);
+  const vacations = useVacationRequests(needVacations);
+  const skills = useSkills(needSkills);
+  const curriculum = useCurriculum(needSkills);
+  const allChildren = useAllChildren(needChildren);
   const [selectedChildId, setSelectedChildId] = useState<string | null>(null);
   const childPhases = useChildPhases(selectedChildId);
   const [childSearch, setChildSearch] = useState('');
@@ -1667,20 +1691,22 @@ export function AdminDashboardScreen() {
           customerSortKey !== key ? null
             : <span className="ml-1 text-[#0365C4]" style={{ fontSize: 11 }}>{customerSortDir === 'asc' ? '▲' : '▼'}</span>;
         const exportCSV = () => {
-          const header = ['Naam', 'E-mail', 'Telefoon', 'Stad', 'Kinderen', 'Tegoed (€)', 'Status', 'Aangemaakt'];
-          const rows = sorted.map(c => [
-            c.parentName, c.email, c.phone, c.city, c.childCount,
-            (c.walletBalanceCents / 100).toFixed(2), c.status,
-            c.createdAt ? new Date(c.createdAt).toLocaleDateString('nl-NL') : '',
-          ]);
-          const csv = [header, ...rows].map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n');
-          const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' });
-          const url = URL.createObjectURL(blob);
-          const a = document.createElement('a');
-          a.href = url;
-          a.download = `klanten_${new Date().toISOString().slice(0, 10)}.csv`;
-          a.click();
-          URL.revokeObjectURL(url);
+          exportToXlsx({
+            filename: `klanten_${new Date().toISOString().slice(0, 10)}.xlsx`,
+            sheetName: 'Klanten',
+            title: `Klanten — ${sorted.length} ${sorted.length === 1 ? 'rij' : 'rijen'}`,
+            columns: [
+              { header: 'Naam', value: 'parentName', width: 24 },
+              { header: 'E-mail', value: 'email', width: 28 },
+              { header: 'Telefoon', value: 'phone', width: 16 },
+              { header: 'Stad', value: 'city', width: 16 },
+              { header: 'Kinderen', value: 'childCount', width: 10 },
+              { header: 'Tegoed (€)', value: c => Number((c.walletBalanceCents / 100).toFixed(2)), width: 12 },
+              { header: 'Status', value: 'status', width: 12 },
+              { header: 'Aangemaakt', value: c => c.createdAt ? new Date(c.createdAt).toLocaleDateString('nl-NL') : '', width: 14 },
+            ],
+            rows: sorted,
+          });
           showToast(`${sorted.length} klanten geëxporteerd`);
         };
         const openDetail = (id: string) => { setSelectedCustomerId(id); setCustomerEditMode(false); goTo('customer-detail'); };
@@ -1696,7 +1722,7 @@ export function AdminDashboardScreen() {
             actions={
               <>
                 <button onClick={() => goTo('customer-new')} className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-white" style={{ background: '#0365C4', fontSize: 13, fontWeight: 600 }}><Plus size={15} /> Nieuwe klant</button>
-                <button onClick={exportCSV} disabled={!sorted.length} className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-[#6B7B94] bg-white border border-[#E8ECF4] disabled:opacity-50" style={{ fontSize: 13, fontWeight: 600 }}><Download size={15} /> Export CSV</button>
+                <button onClick={exportCSV} disabled={!sorted.length} className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-[#6B7B94] bg-white border border-[#E8ECF4] disabled:opacity-50" style={{ fontSize: 13, fontWeight: 600 }}><Download size={15} /> Excel</button>
                 <button onClick={() => customers.refresh()} className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-[#6B7B94] bg-white border border-[#E8ECF4]" style={{ fontSize: 13, fontWeight: 600 }}><RefreshCw size={15} /> Vernieuwen</button>
               </>
             }
@@ -2314,20 +2340,27 @@ export function AdminDashboardScreen() {
         };
         const distinctLocations = Array.from(new Set(all.map(r => r.location).filter(Boolean))).sort();
         const exportCSV = () => {
-          const header = ['Datum', 'Tijd', 'Kind', 'Ouder', 'Type', 'Locatie', 'Instructeur', 'Status', 'Betaling', 'Bedrag (€)'];
-          const rows = sorted.map(r => [
-            r.date, `${r.startTime}-${r.endTime}`, r.childName, r.customerName, r.type, r.location,
-            r.instructorName, r.status, r.paymentStatus, (r.amountCents / 100).toFixed(2),
-          ]);
-          const csv = [header, ...rows].map(row => row.map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n');
-          const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' });
-          const url = URL.createObjectURL(blob);
-          const a = document.createElement('a');
-          a.href = url;
-          a.download = `reserveringen_${new Date().toISOString().slice(0, 10)}.csv`;
-          a.click();
-          URL.revokeObjectURL(url);
-          showToast(`${sorted.length} reserveringen geëxporteerd`);
+          exportToXlsx({
+            filename: `reserveringen_${new Date().toISOString().slice(0, 10)}.xlsx`,
+            sheetName: 'Reserveringen',
+            title: `Reserveringen — ${sorted.length} ${sorted.length === 1 ? 'rij' : 'rijen'}`,
+            columns: [
+              { header: 'Datum', value: r => r.date, width: 12 },
+              { header: 'Tijd', value: r => `${r.startTime}-${r.endTime}`, width: 14 },
+              { header: 'Kind', value: 'childName', width: 22 },
+              { header: 'Ouder', value: 'customerName', width: 22 },
+              { header: 'Type', value: 'type', width: 12 },
+              { header: 'Locatie', value: 'location', width: 18 },
+              { header: 'Instructeur', value: 'instructorName', width: 20 },
+              { header: 'Status', value: 'status', width: 14 },
+              { header: 'Betaling', value: 'paymentStatus', width: 14 },
+              { header: 'Bedrag (€)', value: r => Number((r.amountCents / 100).toFixed(2)), width: 12 },
+            ],
+            rows: sorted,
+          });
+          showToast(sorted.length
+            ? `${sorted.length} ${sorted.length === 1 ? 'reservering' : 'reserveringen'} geëxporteerd`
+            : 'Lege template gedownload');
         };
         return (
           <>
@@ -2341,7 +2374,7 @@ export function AdminDashboardScreen() {
                   <button onClick={() => goTo('reservation-new')} className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-white" style={{ background: '#0365C4', fontSize: 13, fontWeight: 600 }}><Plus size={15} /> Nieuwe</button>
                   <button onClick={() => goTo('calendar')} className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-[#0365C4] bg-white border border-[#0365C4]/20" style={{ fontSize: 13, fontWeight: 600 }}><Calendar size={15} /> Kalender</button>
                   <button onClick={() => goTo('roster')} className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-[#6B7B94] bg-white border border-[#E8ECF4]" style={{ fontSize: 13, fontWeight: 600 }}><BookOpen size={15} /> Rooster</button>
-                  <button onClick={exportCSV} disabled={!sorted.length} className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-[#6B7B94] bg-white border border-[#E8ECF4] disabled:opacity-50" style={{ fontSize: 13, fontWeight: 600 }}><Download size={15} /> Export</button>
+                  <button onClick={exportCSV} title={sorted.length ? `${sorted.length} reserveringen downloaden` : 'Lege template downloaden'} className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-[#6B7B94] bg-white border border-[#E8ECF4] hover:border-[#0365C4] hover:text-[#0365C4]" style={{ fontSize: 13, fontWeight: 600 }}><Download size={15} /> Export</button>
                   <button onClick={() => reservationsAll.refresh()} className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-[#6B7B94] bg-white border border-[#E8ECF4]" style={{ fontSize: 13, fontWeight: 600 }}><RefreshCw size={15} /> Vernieuwen</button>
                 </>
               }
@@ -2486,21 +2519,21 @@ export function AdminDashboardScreen() {
         const totalAmt = filtered.reduce((s, i) => s + i.amountCents, 0);
         const totalOpen = filtered.reduce((s, i) => s + i.outstandingCents, 0);
         const exportCSV = () => {
-          const header = ['Nummer', 'Klant', 'Datum', 'Bedrag (€)', 'Openstaand (€)', 'Status', 'Omschrijving'];
-          const rows = filtered.map(i => [
-            i.number, i.customerName, i.date,
-            (i.amountCents / 100).toFixed(2),
-            (i.outstandingCents / 100).toFixed(2),
-            i.status, i.description,
-          ]);
-          const csv = [header, ...rows].map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n');
-          const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' });
-          const url = URL.createObjectURL(blob);
-          const a = document.createElement('a');
-          a.href = url;
-          a.download = `facturen_${view}_${new Date().toISOString().slice(0, 10)}.csv`;
-          a.click();
-          URL.revokeObjectURL(url);
+          exportToXlsx({
+            filename: `facturen_${view}_${new Date().toISOString().slice(0, 10)}.xlsx`,
+            sheetName: 'Facturen',
+            title: `Facturen — ${filtered.length} ${filtered.length === 1 ? 'rij' : 'rijen'}`,
+            columns: [
+              { header: 'Nummer', value: 'number', width: 16 },
+              { header: 'Klant', value: 'customerName', width: 24 },
+              { header: 'Datum', value: 'date', width: 12 },
+              { header: 'Bedrag (€)', value: i => Number((i.amountCents / 100).toFixed(2)), width: 12 },
+              { header: 'Openstaand (€)', value: i => Number((i.outstandingCents / 100).toFixed(2)), width: 14 },
+              { header: 'Status', value: 'status', width: 14 },
+              { header: 'Omschrijving', value: 'description', width: 28 },
+            ],
+            rows: filtered,
+          });
           showToast(`${filtered.length} facturen geëxporteerd`);
         };
         const title = view === 'invoice-history' ? 'Factuur historie' : view === 'open-items' ? 'Openstaande posten' : 'Facturatie';
@@ -2517,7 +2550,7 @@ export function AdminDashboardScreen() {
                   {view !== 'invoice-history' && <button onClick={() => goTo('invoice-history')} className="px-4 py-2 rounded-lg text-[#6B7B94] bg-white border border-[#E8ECF4]" style={{ fontSize: 13, fontWeight: 600 }}>Historie</button>}
                   {view !== 'open-items' && <button onClick={() => goTo('open-items')} className="px-4 py-2 rounded-lg text-[#E74C3C] bg-[#FEF2F2] border border-[#FECACA]" style={{ fontSize: 13, fontWeight: 600 }}>Openstaand</button>}
                   {view !== 'invoices' && <button onClick={() => goTo('invoices')} className="px-4 py-2 rounded-lg text-[#6B7B94] bg-white border border-[#E8ECF4]" style={{ fontSize: 13, fontWeight: 600 }}>Alle facturen</button>}
-                  <button onClick={exportCSV} disabled={!filtered.length} className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-[#6B7B94] bg-white border border-[#E8ECF4] disabled:opacity-50" style={{ fontSize: 13, fontWeight: 600 }}><Download size={15} /> Export CSV</button>
+                  <button onClick={exportCSV} disabled={!filtered.length} className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-[#6B7B94] bg-white border border-[#E8ECF4] disabled:opacity-50" style={{ fontSize: 13, fontWeight: 600 }}><Download size={15} /> Excel</button>
                   <button onClick={() => allInvoices.refresh()} className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-[#6B7B94] bg-white border border-[#E8ECF4]" style={{ fontSize: 13, fontWeight: 600 }}><RefreshCw size={15} /> Vernieuwen</button>
                 </>
               }
@@ -2660,19 +2693,21 @@ export function AdminDashboardScreen() {
           pending: filtered.filter(p => p.status === 'In behandeling').length,
         };
         const exportCSV = () => {
-          const header = ['Datum', 'Klant', 'Methode', 'Status', 'Bedrag (€)', 'Referentie', 'Omschrijving'];
-          const rows = filtered.map(p => [
-            p.date, p.customerName, p.method, p.status,
-            (p.amountCents / 100).toFixed(2), p.reference, p.description,
-          ]);
-          const csv = [header, ...rows].map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n');
-          const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' });
-          const url = URL.createObjectURL(blob);
-          const a = document.createElement('a');
-          a.href = url;
-          a.download = `betalingen_${new Date().toISOString().slice(0, 10)}.csv`;
-          a.click();
-          URL.revokeObjectURL(url);
+          exportToXlsx({
+            filename: `betalingen_${new Date().toISOString().slice(0, 10)}.xlsx`,
+            sheetName: 'Betalingen',
+            title: `Betalingen — ${filtered.length} ${filtered.length === 1 ? 'rij' : 'rijen'}`,
+            columns: [
+              { header: 'Datum', value: 'date', width: 12 },
+              { header: 'Klant', value: 'customerName', width: 24 },
+              { header: 'Methode', value: 'method', width: 14 },
+              { header: 'Status', value: 'status', width: 14 },
+              { header: 'Bedrag (€)', value: p => Number((p.amountCents / 100).toFixed(2)), width: 12 },
+              { header: 'Referentie', value: 'reference', width: 22 },
+              { header: 'Omschrijving', value: 'description', width: 28 },
+            ],
+            rows: filtered,
+          });
           showToast(`${filtered.length} betalingen geëxporteerd`);
         };
         return (
@@ -2684,7 +2719,7 @@ export function AdminDashboardScreen() {
                 : `${stats.total} ${stats.total === 1 ? 'betaling' : 'betalingen'} · ${formatEuroFromCents(stats.completed)} ontvangen · ${stats.pending} in behandeling`}
               actions={
                 <>
-                  <button onClick={exportCSV} disabled={!filtered.length} className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-[#6B7B94] bg-white border border-[#E8ECF4] disabled:opacity-50" style={{ fontSize: 13, fontWeight: 600 }}><Download size={15} /> Export CSV</button>
+                  <button onClick={exportCSV} disabled={!filtered.length} className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-[#6B7B94] bg-white border border-[#E8ECF4] disabled:opacity-50" style={{ fontSize: 13, fontWeight: 600 }}><Download size={15} /> Excel</button>
                   <button onClick={() => allPayments.refresh()} className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-[#6B7B94] bg-white border border-[#E8ECF4]" style={{ fontSize: 13, fontWeight: 600 }}><RefreshCw size={15} /> Vernieuwen</button>
                 </>
               }
@@ -3004,41 +3039,95 @@ export function AdminDashboardScreen() {
       )}
 
       {/* ═══════ WAITLIST — live ═══════ */}
-      {view === 'waitlist' && (
-        <>
-          <PageHeader title="Wachtlijst" subtitle={waitlist.loading ? 'Laden…' : `${waitlist.data?.length ?? 0} kinderen op wachtlijst`} actions={
-            <button onClick={() => waitlist.refresh()} className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-[#6B7B94] bg-white border border-[#E8ECF4]" style={{ fontSize: 13, fontWeight: 600 }}><RefreshCw size={15} /> Vernieuwen</button>
-          } />
-          <Card>
-            {waitlist.loading ? (
-              <div className="py-16 text-center text-[#A0AEC0]" style={{ fontSize: 13 }}>Laden…</div>
-            ) : (waitlist.data?.length ?? 0) === 0 ? (
-              <div className="py-16 text-center">
-                <ListChecks size={36} className="mx-auto mb-3 text-[#C4CDD9]" />
-                <p className="text-[#1A1A2E]" style={{ fontSize: 14, fontWeight: 600 }}>Wachtlijst is leeg</p>
-              </div>
-            ) : (
-              <DataTable
-                columns={[
-                  { key: 'pos', label: 'Positie', width: '80px' },
-                  { key: 'childName', label: 'Kind', width: '180px' },
-                  { key: 'parentName', label: 'Ouder', width: '180px' },
-                  { key: 'days', label: 'Voorkeursdagen', width: '180px' },
-                  { key: 'feePaid', label: 'Inschrijfgeld', width: '120px' },
-                  { key: 'joined', label: 'Sinds', width: '120px' },
-                ]}
-                data={waitlist.data!.map(w => ({
-                  ...w,
-                  pos: <span className="text-[#FF5C00]" style={{ fontWeight: 700 }}>#{w.position}</span>,
-                  days: w.preferredDays.join(', ') || '—',
-                  feePaid: w.registrationFeePaid ? <span className="text-[#27AE60]">✓ Betaald</span> : <span className="text-[#E74C3C]">✗ Open</span>,
-                  joined: new Date(w.joinedAt).toLocaleDateString('nl-NL'),
-                }))}
-              />
-            )}
-          </Card>
-        </>
-      )}
+      {view === 'waitlist' && (() => {
+        // Walter 2026-05-18 — strict Phase 1 scope per Sami's May 6 agreement:
+        // per-location list with positions + slot-interest registration + 24h
+        // challenge. Search/filter/CSV/drag-reorder are Phase 2.
+        const all = waitlist.data ?? [];
+
+        const onDelete = async (id: string, childName: string) => {
+          if (!window.confirm(`Weet u zeker dat u "${childName}" van de wachtlijst wilt verwijderen? Deze actie kan niet ongedaan worden gemaakt.`)) return;
+          const r = await deleteWaitlistEntry(id);
+          if (!r.ok) {
+            showToast(`❌ Verwijderen mislukt: ${r.error}`);
+            return;
+          }
+          showToast(`✓ ${childName} van de wachtlijst verwijderd`);
+          await waitlist.refresh();
+        };
+
+        return (
+          <>
+            <PageHeader
+              title="Wachtlijst"
+              subtitle={waitlist.loading ? 'Laden…' : `${all.length} kinderen op wachtlijst`}
+              actions={
+                <button onClick={() => waitlist.refresh()} className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-[#6B7B94] bg-white border border-[#E8ECF4]" style={{ fontSize: 13, fontWeight: 600 }}>
+                  <RefreshCw size={15} /> Vernieuwen
+                </button>
+              }
+            />
+
+            <Card>
+              {waitlist.loading ? (
+                <div className="py-16 text-center text-[#A0AEC0]" style={{ fontSize: 13 }}>Laden…</div>
+              ) : all.length === 0 ? (
+                <div className="py-16 text-center">
+                  <ListChecks size={36} className="mx-auto mb-3 text-[#C4CDD9]" />
+                  <p className="text-[#1A1A2E]" style={{ fontSize: 14, fontWeight: 600 }}>Wachtlijst is leeg</p>
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full">
+                    <thead className="bg-[#F8FAFC] border-b border-[#E5EAF2]">
+                      <tr>
+                        {['POSITIE', 'KIND', 'OUDER', 'LOCATIES', 'VOORKEURSDAGEN', 'INSCHRIJFGELD', 'SINDS', ''].map(h => (
+                          <th key={h} className="text-left px-3 py-2.5 text-[#6B7B94]" style={{ fontSize: 11, fontWeight: 700, letterSpacing: 0.4 }}>{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {all.map(w => (
+                        <tr key={w.id} className="border-b border-[#F0F4FA] hover:bg-[#F8FAFC]">
+                          <td className="px-3 py-2.5"><span className="text-[#FF5C00]" style={{ fontSize: 13, fontWeight: 700 }}>#{w.position}</span></td>
+                          <td className="px-3 py-2.5 text-[#1A1A2E]" style={{ fontSize: 12, fontWeight: 600 }}>{w.childName || '—'}</td>
+                          <td className="px-3 py-2.5 text-[#6B7B94]" style={{ fontSize: 12 }}>{w.parentName}</td>
+                          <td className="px-3 py-2.5" style={{ fontSize: 11 }}>
+                            {w.preferredLocationNames.length === 0
+                              ? <span className="text-[#A0AEC0]">—</span>
+                              : <div className="flex flex-wrap gap-1">
+                                  {w.preferredLocationNames.map(loc => (
+                                    <span key={loc} className="inline-block px-2 py-0.5 rounded-full bg-[#EFF6FF] text-[#0365C4]" style={{ fontSize: 10, fontWeight: 600 }}>{loc}</span>
+                                  ))}
+                                </div>}
+                          </td>
+                          <td className="px-3 py-2.5 text-[#6B7B94]" style={{ fontSize: 12 }}>{w.preferredDays.join(', ') || '—'}</td>
+                          <td className="px-3 py-2.5" style={{ fontSize: 12 }}>
+                            {w.registrationFeePaid
+                              ? <span className="text-[#27AE60]" style={{ fontWeight: 600 }}>✓ Betaald</span>
+                              : <span className="text-[#E74C3C]" style={{ fontWeight: 600 }}>✗ Open</span>}
+                          </td>
+                          <td className="px-3 py-2.5 text-[#A0AEC0]" style={{ fontSize: 12 }}>{new Date(w.joinedAt).toLocaleDateString('nl-NL')}</td>
+                          <td className="px-3 py-2.5 text-right">
+                            <button
+                              onClick={() => onDelete(w.id, w.childName || w.parentName)}
+                              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[#E74C3C] border border-[#E74C3C]/30 hover:bg-[#FEF2F2]"
+                              style={{ fontSize: 11, fontWeight: 600 }}
+                              title="Verwijderen van wachtlijst"
+                            >
+                              <Trash2 size={12} /> Verwijderen
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </Card>
+          </>
+        );
+      })()}
 
       {/* ═══════ REVIEWS — live ═══════ */}
       {(view === 'reviews' || view === 'review-approval') && (() => {
@@ -3297,7 +3386,9 @@ export function AdminDashboardScreen() {
         const phases = childPhases.data ?? {};
         const steps = curriculum.data ?? [];
 
-        // Compute completion per step (count items at phase 4) for prerequisite chain.
+        // Walter 2026-05-13/19 — completion logic via shared helper so admin
+        // and mobile use identical cascade rules (incl. Stap 1 exception:
+        // basisvaardigheden group unlocks Stap 2).
         const completionByStep: Record<string, { done: number; total: number; complete: boolean }> = {};
         for (const s of steps) {
           let done = 0, total = 0;
@@ -3305,8 +3396,12 @@ export function AdminDashboardScreen() {
             total++;
             if ((phases[it.id] ?? 1) >= 4) done++;
           }
-          completionByStep[s.id] = { done, total, complete: total > 0 && done === total };
+          completionByStep[s.id] = {
+            done, total,
+            complete: isStepCompleteForUnlock(s, phases),
+          };
         }
+        const derivedLevel = steps.length > 0 ? deriveChildLevel(steps, phases) : null;
 
         const q = childSearch.trim().toLowerCase();
         const filteredChildren = q
@@ -3319,28 +3414,35 @@ export function AdminDashboardScreen() {
 
         const exportProgressCSV = () => {
           if (!selected) return;
-          const header = ['Stap/Diploma', 'Categorie', 'Onderdeel', 'Fase nummer', 'Fase label'];
-          const rows: (string | number)[][] = [];
+          type Row = { step: string; category: string; item: string; phase: number; label: string };
+          const rows: Row[] = [];
           for (const s of steps) {
             for (const g of s.groups) {
               for (const it of g.items) {
                 const phase = phases[it.id] ?? 1;
-                rows.push([
-                  s.name, g.label, it.description, phase, PHASE_LABELS[phase - 1] ?? '—',
-                ]);
+                rows.push({
+                  step: s.name,
+                  category: g.label,
+                  item: it.description,
+                  phase,
+                  label: PHASE_LABELS[phase - 1] ?? '—',
+                });
               }
             }
           }
-          const csv = [header, ...rows]
-            .map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(','))
-            .join('\n');
-          const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' });
-          const url = URL.createObjectURL(blob);
-          const a = document.createElement('a');
-          a.href = url;
-          a.download = `voortgang_${selected.firstName}_${selected.lastName}_${new Date().toISOString().slice(0, 10)}.csv`;
-          a.click();
-          URL.revokeObjectURL(url);
+          exportToXlsx<Row>({
+            filename: `voortgang_${selected.firstName}_${selected.lastName}_${new Date().toISOString().slice(0, 10)}.xlsx`,
+            sheetName: 'Voortgang',
+            title: `Voortgang — ${selected.firstName} ${selected.lastName}`,
+            columns: [
+              { header: 'Stap/Diploma', value: 'step', width: 28 },
+              { header: 'Categorie', value: 'category', width: 22 },
+              { header: 'Onderdeel', value: 'item', width: 36 },
+              { header: 'Fase nummer', value: 'phase', width: 12 },
+              { header: 'Fase label', value: 'label', width: 22 },
+            ],
+            rows,
+          });
           showToast(`✓ Voortgang van ${selected.firstName} geëxporteerd`);
         };
 
@@ -3354,7 +3456,9 @@ export function AdminDashboardScreen() {
           <>
             <PageHeader
               title="Voortgang per kind"
-              subtitle={selected ? `${selected.firstName} ${selected.lastName} · ${selected.age} jaar · ${selected.level}` : `${children.length} ${children.length === 1 ? 'kind' : 'kinderen'} · selecteer er één`}
+              subtitle={selected
+                ? `${selected.firstName} ${selected.lastName} · ${selected.age} jaar · ${derivedLevel ?? selected.level} (auto)`
+                : `${children.length} ${children.length === 1 ? 'kind' : 'kinderen'} · selecteer er één`}
               actions={
                 <>
                   {selected && (
@@ -3546,11 +3650,21 @@ export function AdminDashboardScreen() {
         );
       })()}
 
-      {/* ═══════ SLOT INTEREST (admin overview) ═══════ */}
+      {/* ═══════ SLOT INTEREST (admin overview) — Walter Apr 23 ═══════ */}
       {view === 'slot-interest' && (() => {
-        // Walter Apr 23 — slot-interesses are waitlist entries with a preferred timeslot.
+        // Walter Apr 23 — slot-interesses are waitlist entries with a preferred
+        // day and/or timeslot. When a fixed spot frees up, every parent listed
+        // here gets a 24-hour challenge notification.
         const all = (waitlist.data ?? []).filter(w =>
-          w.preferredDays?.length || (w as unknown as { preferredTimeStart?: string }).preferredTimeStart);
+          w.preferredDays?.length > 0 || w.preferredTimeStart);
+        const fmtTime = (t: string | null) => t ? t.slice(0, 5) : null; // HH:MM:SS → HH:MM
+        const fmtTimeRange = (s: string | null, e: string | null) => {
+          const a = fmtTime(s), b = fmtTime(e);
+          if (a && b) return `${a} – ${b}`;
+          if (a) return `vanaf ${a}`;
+          if (b) return `tot ${b}`;
+          return null;
+        };
         return (
           <>
             <PageHeader
@@ -3584,26 +3698,39 @@ export function AdminDashboardScreen() {
                   <table className="w-full">
                     <thead className="bg-[#F8FAFC] border-b border-[#E5EAF2]">
                       <tr>
-                        {['POSITIE', 'KIND', 'OUDER', 'VOORKEURSDAGEN', 'INSCHRIJFGELD', 'SINDS'].map(h => (
+                        {['POSITIE', 'KIND', 'OUDER', 'LOCATIES', 'VOORKEURSDAGEN', 'TIJDSTIP', 'INSCHRIJFGELD', 'SINDS'].map(h => (
                           <th key={h} className="text-left px-3 py-2.5 text-[#6B7B94]" style={{ fontSize: 11, fontWeight: 700, letterSpacing: 0.4 }}>{h}</th>
                         ))}
                       </tr>
                     </thead>
                     <tbody>
-                      {all.map(w => (
-                        <tr key={w.id} className="border-b border-[#F0F4FA] hover:bg-[#F8FAFC]">
-                          <td className="px-3 py-2.5 text-[#FF5C00]" style={{ fontSize: 13, fontWeight: 700 }}>#{w.position}</td>
-                          <td className="px-3 py-2.5 text-[#1A1A2E]" style={{ fontSize: 12, fontWeight: 600 }}>{w.childName}</td>
-                          <td className="px-3 py-2.5 text-[#6B7B94]" style={{ fontSize: 12 }}>{w.parentName}</td>
-                          <td className="px-3 py-2.5 text-[#0365C4]" style={{ fontSize: 12, fontWeight: 600 }}>{w.preferredDays?.join(', ') || '—'}</td>
-                          <td className="px-3 py-2.5">
-                            {w.registrationFeePaid
-                              ? <span className="text-[#27AE60]" style={{ fontSize: 12, fontWeight: 600 }}>✓ Betaald</span>
-                              : <span className="text-[#E74C3C]" style={{ fontSize: 12, fontWeight: 600 }}>✗ Open</span>}
-                          </td>
-                          <td className="px-3 py-2.5 text-[#A0AEC0]" style={{ fontSize: 12 }}>{new Date(w.joinedAt).toLocaleDateString('nl-NL')}</td>
-                        </tr>
-                      ))}
+                      {all.map(w => {
+                        const timeRange = fmtTimeRange(w.preferredTimeStart, w.preferredTimeEnd);
+                        return (
+                          <tr key={w.id} className="border-b border-[#F0F4FA] hover:bg-[#F8FAFC]">
+                            <td className="px-3 py-2.5 text-[#FF5C00]" style={{ fontSize: 13, fontWeight: 700 }}>#{w.position}</td>
+                            <td className="px-3 py-2.5 text-[#1A1A2E]" style={{ fontSize: 12, fontWeight: 600 }}>{w.childName || '—'}</td>
+                            <td className="px-3 py-2.5 text-[#6B7B94]" style={{ fontSize: 12 }}>{w.parentName}</td>
+                            <td className="px-3 py-2.5" style={{ fontSize: 11 }}>
+                              {w.preferredLocationNames.length === 0
+                                ? <span className="text-[#A0AEC0]">—</span>
+                                : <div className="flex flex-wrap gap-1">
+                                    {w.preferredLocationNames.map(loc => (
+                                      <span key={loc} className="inline-block px-2 py-0.5 rounded-full bg-[#EFF6FF] text-[#0365C4]" style={{ fontSize: 10, fontWeight: 600 }}>{loc}</span>
+                                    ))}
+                                  </div>}
+                            </td>
+                            <td className="px-3 py-2.5 text-[#0365C4]" style={{ fontSize: 12, fontWeight: 600 }}>{w.preferredDays?.join(', ') || '—'}</td>
+                            <td className="px-3 py-2.5 text-[#1A1A2E]" style={{ fontSize: 12, fontWeight: 600 }}>{timeRange ?? <span className="text-[#A0AEC0]" style={{ fontWeight: 400 }}>—</span>}</td>
+                            <td className="px-3 py-2.5">
+                              {w.registrationFeePaid
+                                ? <span className="text-[#27AE60]" style={{ fontSize: 12, fontWeight: 600 }}>✓ Betaald</span>
+                                : <span className="text-[#E74C3C]" style={{ fontSize: 12, fontWeight: 600 }}>✗ Open</span>}
+                            </td>
+                            <td className="px-3 py-2.5 text-[#A0AEC0]" style={{ fontSize: 12 }}>{new Date(w.joinedAt).toLocaleDateString('nl-NL')}</td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
@@ -3803,8 +3930,28 @@ export function AdminDashboardScreen() {
       {/* ═══════ FIXED SCHEDULE (Excel-style weekly editor) ═══════ */}
       {view === 'fixed-schedule' && (() => {
         // Walter Apr 22 — 8 locaties incl. Doorwerth, 15-min granularity, 08:30-19:00, color-coded.
-        // Real lesson rows from `lessons` (this week) gebundeld op weekday + tijd.
-        const reservations = reservationsAll.data ?? [];
+        // Walter Jun 6 — Vast rooster shows 1 row per customer (primary fixed slot only).
+        // Multiple/extra lessons for the same customer are shown in the regular reservations view.
+        const allReservations = reservationsAll.data ?? [];
+        // Dedupe by childId — keep each customer's earliest reservation in the week (their primary fixed slot).
+        const reservations = (() => {
+          const seen = new Set<string>();
+          const ordered = [...allReservations].sort((a, b) => {
+            const da = `${a.date ?? ''} ${a.startTime ?? ''}`;
+            const db = `${b.date ?? ''} ${b.startTime ?? ''}`;
+            return da.localeCompare(db);
+          });
+          const primary: typeof allReservations = [];
+          for (const r of ordered) {
+            const key = (r as { childId?: string; childName?: string }).childId
+              ?? (r as { childName?: string }).childName
+              ?? r.id;
+            if (seen.has(key)) continue;
+            seen.add(key);
+            primary.push(r);
+          }
+          return primary;
+        })();
         const locColors = ['#0365C4', '#FF5C00', '#27AE60', '#8E44AD', '#E67E22', '#16A085', '#C0392B', '#2C3E50'];
         const distinctLocs = Array.from(new Set(reservations.map(r => r.location).filter(Boolean))).sort();
         const colorMap: Record<string, string> = {};
@@ -3830,32 +3977,73 @@ export function AdminDashboardScreen() {
           const key = `${dayIdx}|${tk}`;
           (grid[key] ??= []).push(r);
         }
+        const extraLessonsCount = allReservations.length - reservations.length;
         return (
           <>
             <PageHeader
               title="Vast rooster"
               subtitle={reservationsAll.loading
                 ? 'Laden…'
-                : `${distinctLocs.length} locaties · ${slots.length} tijdslots (15-min) · ${reservations.length} reserveringen`}
+                : `${distinctLocs.length} locaties · ${slots.length} tijdslots (15-min) · ${reservations.length} klanten` + (extraLessonsCount > 0 ? ` · ${extraLessonsCount} extra lessen verborgen` : '')}
               actions={
-                <button onClick={() => reservationsAll.refresh()} className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-[#6B7B94] bg-white border border-[#E8ECF4]" style={{ fontSize: 13, fontWeight: 600 }}>
-                  <RefreshCw size={15} /> Vernieuwen
-                </button>
+                <>
+                  <button
+                    disabled={!reservations.length}
+                    onClick={() => {
+                      const dayNames = ['Maandag', 'Dinsdag', 'Woensdag', 'Donderdag', 'Vrijdag', 'Zaterdag', 'Zondag'];
+                      const sorted = [...reservations].sort((a, b) => {
+                        const da = new Date(a.date as string).getDay();
+                        const db = new Date(b.date as string).getDay();
+                        const dayA = (da + 6) % 7;
+                        const dayB = (db + 6) % 7;
+                        if (dayA !== dayB) return dayA - dayB;
+                        return (a.startTime ?? '').localeCompare(b.startTime ?? '');
+                      });
+                      exportToXlsx({
+                        filename: `vast-rooster-${new Date().toISOString().slice(0, 10)}.xlsx`,
+                        sheetName: 'Vast rooster',
+                        title: `Vast rooster — ${reservations.length} klanten · ${distinctLocs.length} locaties`,
+                        columns: [
+                          { header: 'Dag', value: r => { const d = new Date(r.date as string); return dayNames[(d.getDay() + 6) % 7]; }, width: 12 },
+                          { header: 'Datum', value: r => (r.date as string)?.slice(0, 10) ?? '', width: 12 },
+                          { header: 'Start', value: r => (r.startTime as string)?.slice(0, 5) ?? '', width: 8 },
+                          { header: 'Einde', value: r => (r.endTime as string)?.slice(0, 5) ?? '', width: 8 },
+                          { header: 'Locatie', value: r => r.location ?? '', width: 18 },
+                          { header: 'Kind', value: r => r.childName ?? '', width: 22 },
+                          { header: 'Type les', value: r => r.type ?? '', width: 14 },
+                          { header: 'Status', value: r => r.status ?? '', width: 14 },
+                        ],
+                        rows: sorted,
+                        rowColor: r => r.location ? tintHex(colorMap[r.location] ?? '#0365C4', 0.88) : undefined,
+                      });
+                    }}
+                    title={reservations.length ? `${reservations.length} klanten exporteren naar Excel` : 'Geen data om te exporteren'}
+                    className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-[#6B7B94] bg-white border border-[#E8ECF4] hover:border-[#0365C4] hover:text-[#0365C4] disabled:opacity-50 disabled:cursor-not-allowed"
+                    style={{ fontSize: 13, fontWeight: 600 }}
+                  >
+                    <Download size={15} /> Excel
+                  </button>
+                  <button onClick={() => reservationsAll.refresh()} className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-[#6B7B94] bg-white border border-[#E8ECF4]" style={{ fontSize: 13, fontWeight: 600 }}>
+                    <RefreshCw size={15} /> Vernieuwen
+                  </button>
+                </>
               }
             />
-            {/* Locatie legend */}
+            {/* Locatie legend — pinned to top-right per Walter Jun 6 */}
             {distinctLocs.length > 0 && (
-              <Card className="p-3 mb-4">
-                <p className="text-[#A0AEC0] mb-2" style={{ fontSize: 11, fontWeight: 700, letterSpacing: 0.4 }}>LOCATIES</p>
-                <div className="flex flex-wrap gap-2">
-                  {distinctLocs.map(l => (
-                    <div key={l} className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg" style={{ background: `${colorMap[l]}15` }}>
-                      <span className="w-2.5 h-2.5 rounded-full" style={{ background: colorMap[l] }} />
-                      <span style={{ fontSize: 12, fontWeight: 600, color: colorMap[l] }}>{l}</span>
-                    </div>
-                  ))}
-                </div>
-              </Card>
+              <div className="flex justify-end mb-4">
+                <Card className="p-3" style={{ maxWidth: 520 }}>
+                  <p className="text-[#A0AEC0] mb-2" style={{ fontSize: 11, fontWeight: 700, letterSpacing: 0.4 }}>LOCATIES</p>
+                  <div className="flex flex-wrap gap-2 justify-end">
+                    {distinctLocs.map(l => (
+                      <div key={l} className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg" style={{ background: `${colorMap[l]}15` }}>
+                        <span className="w-2.5 h-2.5 rounded-full" style={{ background: colorMap[l] }} />
+                        <span style={{ fontSize: 12, fontWeight: 600, color: colorMap[l] }}>{l}</span>
+                      </div>
+                    ))}
+                  </div>
+                </Card>
+              </div>
             )}
             <Card className="p-2 overflow-x-auto">
               {reservationsAll.loading ? (
@@ -3908,7 +4096,7 @@ export function AdminDashboardScreen() {
               )}
             </Card>
             <p className="text-center text-[#A0AEC0] mt-3" style={{ fontSize: 11 }}>
-              Klik op een lesblok voor de reservering-details · Vaste plaatsen worden in een latere sprint persistent gemaakt
+              Klik op een lesblok voor de reservering-details · Elke klant verschijnt 1× (vaste plaats) — extra lessen staan onder Reserveringen
             </p>
           </>
         );
@@ -3986,14 +4174,10 @@ export function AdminDashboardScreen() {
               <h3 className="text-[#1A1A2E] flex items-center gap-2 mb-4" style={{ fontSize: 15, fontWeight: 700 }}>
                 <BookOpen size={18} color="#FF5C00" /> Over deze applicatie
               </h3>
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div className="p-3 rounded-lg" style={{ background: '#F8FAFC' }}>
                   <p className="text-[#A0AEC0]" style={{ fontSize: 11, fontWeight: 700, letterSpacing: 0.3 }}>VERSIE</p>
                   <p className="text-[#1A1A2E] mt-1" style={{ fontSize: 14, fontWeight: 700 }}>Admin Dashboard 1.0</p>
-                </div>
-                <div className="p-3 rounded-lg" style={{ background: '#F8FAFC' }}>
-                  <p className="text-[#A0AEC0]" style={{ fontSize: 11, fontWeight: 700, letterSpacing: 0.3 }}>PLATFORM</p>
-                  <p className="text-[#1A1A2E] mt-1" style={{ fontSize: 14, fontWeight: 700 }}>React + Vite + Supabase</p>
                 </div>
                 <div className="p-3 rounded-lg" style={{ background: '#F8FAFC' }}>
                   <p className="text-[#A0AEC0]" style={{ fontSize: 11, fontWeight: 700, letterSpacing: 0.3 }}>STATUS</p>

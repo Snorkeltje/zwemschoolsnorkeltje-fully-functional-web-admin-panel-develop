@@ -87,7 +87,8 @@ export function RosterView({ goTo, showToast, setSelectedReservation }: RosterVi
   };
 
   const exportCSV = () => {
-    if (!filtered.length) { showToast('Geen reserveringen om te exporteren'); return; }
+    // Walter 2026-05-19 — always download (header-only when empty so the
+    // admin can use it as a template). Adds a BOM for Excel UTF-8 support.
     const header = ['Datum', 'Tijd', 'Kind', 'Ouder', 'Type', 'Locatie', 'Instructeur', 'Status'];
     const rows = filtered.map(r => [
       r.date, `${r.startTime}-${r.endTime}`, r.childName, r.customerName,
@@ -99,9 +100,13 @@ export function RosterView({ goTo, showToast, setSelectedReservation }: RosterVi
     const a = document.createElement('a');
     a.href = url;
     a.download = `rooster_${weekStart.toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(a);
     a.click();
-    URL.revokeObjectURL(url);
-    showToast(`${filtered.length} reserveringen geëxporteerd`);
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 100);
+    showToast(filtered.length
+      ? `${filtered.length} ${filtered.length === 1 ? 'reservering' : 'reserveringen'} geëxporteerd`
+      : 'Lege template-CSV gedownload (geen reserveringen deze week)');
   };
 
   const dayStats = weekDays.map(d => {
@@ -120,7 +125,7 @@ export function RosterView({ goTo, showToast, setSelectedReservation }: RosterVi
             <button onClick={() => setWeekOffset(o => o - 1)} className="p-1.5 rounded-lg hover:bg-[#F4F7FC] text-[#6B7B94]"><ArrowLeft size={16} /></button>
             <span className="text-[#1A1A2E] px-2" style={{ fontSize: 13, fontWeight: 600 }}>{fmtRange()}</span>
             <button onClick={() => setWeekOffset(o => o + 1)} className="p-1.5 rounded-lg hover:bg-[#F4F7FC] text-[#6B7B94]"><ArrowRight size={16} /></button>
-            <button onClick={exportCSV} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[#6B7B94] bg-white border border-[#E8ECF4]" style={{ fontSize: 12 }}><Download size={14} /> CSV</button>
+            <button onClick={exportCSV} title={filtered.length ? `${filtered.length} lessen downloaden als CSV` : 'Lege template downloaden'} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[#6B7B94] bg-white border border-[#E8ECF4] hover:border-[#0365C4] hover:text-[#0365C4] cursor-pointer transition-colors" style={{ fontSize: 12 }}><Download size={14} /> CSV</button>
             <button onClick={() => reservations.refresh()} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[#6B7B94] bg-white border border-[#E8ECF4]" style={{ fontSize: 12 }}><RefreshCw size={14} /> Refresh</button>
           </div>
         }

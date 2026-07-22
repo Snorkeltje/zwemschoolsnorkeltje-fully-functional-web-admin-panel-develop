@@ -124,7 +124,7 @@ export function ReservationDetailView({ reservation, goTo, showToast }: Reservat
               <DetailRow label="Extra tel. nr (2e contactpersoon)" value={customerData.phone2} />
               <DetailRow label="Dag" value={customerData.day} />
               <DetailRow label="Waar kiezen jullie voor bij uitval collega?" value={customerData.waitlistChoice} />
-              <DetailRow label="Indien 1-op-2, 1-op-3 of 1-op-4 les :" value={customerData.oneOnXChoice} />
+              <DetailRow label="Voorkeur bij duo / trio / groepsles:" value={customerData.oneOnXChoice} />
               <DetailRow label="VOORTGANG" value={customerData.progress} />
               <DetailRow label="VOORTGANG (uitgebreid)" value={customerData.progressExtended} />
               <div className="px-5 py-2 border-t border-[#E8ECF4]">
@@ -158,7 +158,7 @@ export function ReservationDetailView({ reservation, goTo, showToast }: Reservat
                   </tr>
                   <tr className="border-b border-[#F0F4FA]">
                     <td className="px-4 py-2.5 text-[#1A1A2E]">Detail</td>
-                    <td className="px-4 py-2.5 text-[#6B7B94]">Betaald met knipkaart</td>
+                    <td className="px-4 py-2.5 text-[#6B7B94]">Betaald met tegoed</td>
                     <td className="px-4 py-2.5" colSpan={4}></td>
                     <td className="px-4 py-2.5 text-[#E74C3C]" style={{ fontWeight: 600 }}>{'\u20AC'} -{reservation.amount},00</td>
                     <td className="px-4 py-2.5">
@@ -270,7 +270,7 @@ export function ReservationDetailView({ reservation, goTo, showToast }: Reservat
                         <span className="text-[#1A1A2E]" style={{ fontSize: 12, fontWeight: 600 }}>Walter Van De Geest</span>
                         <span className="text-[#A0AEC0]" style={{ fontSize: 11 }}>15-03-2026 07:44</span>
                       </div>
-                      <p className="text-[#6B7B94]" style={{ fontSize: 13 }}>Reservering aangemaakt via website. Knipkaart automatisch afgeboekt.</p>
+                      <p className="text-[#6B7B94]" style={{ fontSize: 13 }}>Reservering aangemaakt via website. Tegoed automatisch afgeboekt.</p>
                     </div>
                   </div>
                   <div className="flex gap-2">
@@ -284,7 +284,7 @@ export function ReservationDetailView({ reservation, goTo, showToast }: Reservat
                   {[
                     { time: '15-03-2026 07:45', action: 'Status gewijzigd: 10-Nieuw → 30-Betaald', user: 'System' },
                     { time: '15-03-2026 07:44', action: 'Reservering aangemaakt', user: customerData.parentName },
-                    { time: '15-03-2026 07:44', action: 'Knipkaart KNP-3021 afgeboekt (-1)', user: 'System' },
+                    { time: '15-03-2026 07:44', action: 'Tegoed afgeboekt (-€39)', user: 'System' },
                   ].map((h, i) => (
                     <div key={i} className="flex items-start gap-3 py-2 border-b border-[#F0F4FA] last:border-0">
                       <div className="w-2 h-2 rounded-full mt-1.5 flex-shrink-0" style={{ background: '#0365C4' }} />
@@ -362,7 +362,7 @@ export function ReservationDetailView({ reservation, goTo, showToast }: Reservat
               <div className="space-y-2">
                 <label className="flex items-center gap-2 cursor-pointer">
                   <input type="radio" name="extraQ" value="A" checked={extraQuestion === 'A'} onChange={() => setExtraQuestion('A')} className="w-4 h-4 accent-[#0365C4]" />
-                  <span className="text-[#1A1A2E]" style={{ fontSize: 13 }}>A. De les laten omzetten naar een 1-op-1 zwemles</span>
+                  <span className="text-[#1A1A2E]" style={{ fontSize: 13 }}>A. De les laten omzetten naar een privéles</span>
                 </label>
                 <label className="flex items-center gap-2 cursor-pointer">
                   <input type="radio" name="extraQ" value="B" checked={extraQuestion === 'B'} onChange={() => setExtraQuestion('B')} className="w-4 h-4 accent-[#0365C4]" />

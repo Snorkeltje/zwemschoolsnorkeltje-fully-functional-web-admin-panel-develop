@@ -1,3 +1,4 @@
+import { Suspense, lazy, type ReactElement } from "react";
 import { createBrowserRouter } from "react-router";
 import { PortalScreen } from "./screens/PortalScreen";
 import { SplashScreen } from "./screens/SplashScreen";
@@ -76,9 +77,27 @@ import { WebsiteFAQScreen } from "./screens/website/WebsiteFAQScreen";
 import { WebsiteReserverenScreen } from "./screens/website/WebsiteReserverenScreen";
 import { WebsiteReviewsScreen } from "./screens/website/WebsiteReviewsScreen";
 import { WebsiteAlgemeneVoorwaardenScreen } from "./screens/website/WebsiteAlgemeneVoorwaardenScreen";
-import { AdminDashboardScreen } from "./screens/admin/AdminDashboardScreen";
+// AdminDashboardScreen is ~4300 lines and pulls in recharts + xlsx via its
+// downstream imports. Loading it lazily keeps the initial login-page bundle
+// small so Walter's login screen paints fast; the dashboard chunk fetches
+// AFTER a successful sign-in.
+const AdminDashboardScreen = lazy(() =>
+  import('./screens/admin/AdminDashboardScreen').then(m => ({ default: m.AdminDashboardScreen })),
+);
 import { AdminLoginScreen } from "./screens/AdminLoginScreen";
 import { RequireAdmin } from "./components/RequireAdmin";
+
+function LazyFallback(): ReactElement {
+  return (
+    <div className="min-h-screen flex items-center justify-center" style={{ background: '#0F1117' }}>
+      <div className="text-white/70 text-sm">Dashboard laden…</div>
+    </div>
+  );
+}
+
+function lazyRoute(el: ReactElement): ReactElement {
+  return <Suspense fallback={<LazyFallback />}>{el}</Suspense>;
+}
 
 export const router = createBrowserRouter([
   // Walter web-admin: root URL goes straight to the admin login.
@@ -166,5 +185,5 @@ export const router = createBrowserRouter([
   { path: "website/privacy", element: <WebsiteAlgemeneVoorwaardenScreen /> },
   // Admin routes
   { path: "admin/login", element: <AdminLoginScreen /> },
-  { path: "admin", element: <RequireAdmin><AdminDashboardScreen /></RequireAdmin> },
+  { path: "admin", element: <RequireAdmin>{lazyRoute(<AdminDashboardScreen />)}</RequireAdmin> },
 ]);

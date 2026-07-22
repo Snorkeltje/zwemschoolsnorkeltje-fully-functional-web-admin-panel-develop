@@ -281,9 +281,14 @@ export function AdminLayout({ children, currentView, onNavigate, onSearch }: Adm
 
       {/* Bottom links */}
       <div className="border-t border-white/10 p-3 space-y-0.5">
-        <button onClick={() => navigate('/')} className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-white/40 hover:text-white/80 hover:bg-white/5 transition-all">
+        <a
+          href="https://www.zwemschoolsnorkeltje.nl/"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-white/40 hover:text-white/80 hover:bg-white/5 transition-all"
+        >
           <Globe size={16} />{sidebarOpen && <span style={{ fontSize: 12 }}>Website</span>}
-        </button>
+        </a>
         <button onClick={() => navigate('/mobile-install')} className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-white/40 hover:text-white/80 hover:bg-white/5 transition-all">
           <Smartphone size={16} />{sidebarOpen && <span style={{ fontSize: 12 }}>Mobile App installeren</span>}
         </button>

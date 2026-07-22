@@ -23,11 +23,28 @@ interface AuthContextValue {
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 
+const PROFILE_CACHE_KEY = 'sb-admin-profile-v1';
+
+function readCachedProfile(): AdminProfile | null {
+  try {
+    const raw = window.localStorage.getItem(PROFILE_CACHE_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw) as AdminProfile;
+  } catch { return null; }
+}
+
+function writeCachedProfile(p: AdminProfile | null) {
+  try {
+    if (p) window.localStorage.setItem(PROFILE_CACHE_KEY, JSON.stringify(p));
+    else window.localStorage.removeItem(PROFILE_CACHE_KEY);
+  } catch { /* ignore */ }
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
   const [session, setSession] = useState<Session | null>(null);
   const [user, setUser] = useState<User | null>(null);
-  const [profile, setProfile] = useState<AdminProfile | null>(null);
+  const [profile, setProfile] = useState<AdminProfile | null>(readCachedProfile);
 
   useEffect(() => {
     let mounted = true;
@@ -42,11 +59,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (!mounted) return;
         setSession(data.session);
         setUser(data.session?.user ?? null);
-        if (data.session?.user) {
-          const p = await fetchCurrentProfile();
+        const uid = data.session?.user?.id;
+        // Show cached profile instantly, then verify in background.
+        if (uid) {
+          if (mounted) {
+            window.clearTimeout(failsafe);
+            setLoading(false); // release the UI immediately with cached profile.
+          }
+          const p = await fetchCurrentProfile(uid);
           if (!mounted) return;
           setProfile(p as AdminProfile | null);
+          writeCachedProfile(p as AdminProfile | null);
+          return;
         }
+        writeCachedProfile(null);
+        setProfile(null);
       } catch (e) {
         // eslint-disable-next-line no-console
         console.warn('Auth init failed:', e);
@@ -65,14 +92,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setUser(sess?.user ?? null);
       if (sess?.user) {
         try {
-          const p = await fetchCurrentProfile();
-          if (mounted) setProfile(p as AdminProfile | null);
+          const p = await fetchCurrentProfile(sess.user.id);
+          if (mounted) {
+            setProfile(p as AdminProfile | null);
+            writeCachedProfile(p as AdminProfile | null);
+          }
         } catch (e) {
           // eslint-disable-next-line no-console
           console.warn('Profile fetch failed:', e);
         }
       } else {
         setProfile(null);
+        writeCachedProfile(null);
       }
     });
     return () => {
@@ -87,18 +118,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (error) return { error: friendly(error.message) };
     if (!data.session) return { error: 'Geen sessie ontvangen — probeer opnieuw.' };
     // Walter 2026-05-01: only admin users may access the dashboard.
-    // Reject parent / instructor sign-ins immediately and clear the session.
+    // Pass the user id we already have from the signIn response — this skips
+    // the extra supabase.auth.getUser() network round-trip inside
+    // fetchCurrentProfile and shaves a full RTT off the login flow.
     try {
-      const p = await fetchCurrentProfile() as AdminProfile | null;
+      const p = await fetchCurrentProfile(data.session.user.id) as AdminProfile | null;
       if (!p || p.role !== 'admin') {
         await supabase.auth.signOut();
+        writeCachedProfile(null);
         return { error: 'Alleen beheerders mogen inloggen op het dashboard.' };
       }
       setProfile(p);
+      writeCachedProfile(p);
     } catch (e) {
       // eslint-disable-next-line no-console
       console.warn('Role check after sign-in failed:', e);
       await supabase.auth.signOut();
+      writeCachedProfile(null);
       return { error: 'Profiel kon niet worden geladen — probeer opnieuw.' };
     }
     return {};
@@ -114,6 +150,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setSession(null);
     setUser(null);
     setProfile(null);
+    writeCachedProfile(null);
     // Hard-clear any cached supabase auth artifacts in localStorage so a
     // refresh definitely lands the user back on the login screen.
     try {

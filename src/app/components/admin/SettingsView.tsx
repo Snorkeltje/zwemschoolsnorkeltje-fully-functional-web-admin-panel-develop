@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import {
-  Plus, Edit2, Trash2, Mail, CreditCard, Waves, Zap, Check,
+  Plus, Edit2, Trash2, Mail, CreditCard, Waves, Zap, Check, AlertCircle, Loader2,
 } from 'lucide-react';
+import { supabase } from '../../../lib/supabase';
 
 const Card = ({ children, className = '' }: { children: React.ReactNode; className?: string }) => (
   <div className={`bg-white rounded-xl ${className}`} style={{ boxShadow: '0 1px 8px rgba(0,0,0,0.04)', border: '1px solid #E8ECF4' }}>{children}</div>
@@ -89,15 +90,123 @@ function saveSettings(s: AdminSettings) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(s));
 }
 
+interface PaymentSettings {
+  stripe_secret_test: string;
+  stripe_secret_live: string;
+  stripe_publishable_test: string;
+  stripe_publishable_live: string;
+  mode: 'test' | 'live';
+  last_tested_at: string | null;
+  last_test_country: string | null;
+  last_test_ok: boolean | null;
+}
+
+const blankPaymentSettings: PaymentSettings = {
+  stripe_secret_test: '',
+  stripe_secret_live: '',
+  stripe_publishable_test: '',
+  stripe_publishable_live: '',
+  mode: 'test',
+  last_tested_at: null,
+  last_test_country: null,
+  last_test_ok: null,
+};
+
+async function loadPaymentSettings(): Promise<PaymentSettings> {
+  const { data, error } = await supabase
+    .from('payment_settings')
+    .select('stripe_secret_test, stripe_secret_live, stripe_publishable_test, stripe_publishable_live, mode, last_tested_at, last_test_country, last_test_ok')
+    .eq('id', 1)
+    .maybeSingle();
+  if (error || !data) return blankPaymentSettings;
+  return {
+    stripe_secret_test: data.stripe_secret_test ?? '',
+    stripe_secret_live: data.stripe_secret_live ?? '',
+    stripe_publishable_test: data.stripe_publishable_test ?? '',
+    stripe_publishable_live: data.stripe_publishable_live ?? '',
+    mode: (data.mode as 'test' | 'live') ?? 'test',
+    last_tested_at: data.last_tested_at,
+    last_test_country: data.last_test_country,
+    last_test_ok: data.last_test_ok,
+  };
+}
+
+async function savePaymentSettings(s: PaymentSettings): Promise<{ ok: boolean; error?: string }> {
+  const { error } = await supabase
+    .from('payment_settings')
+    .update({
+      stripe_secret_test: s.stripe_secret_test || null,
+      stripe_secret_live: s.stripe_secret_live || null,
+      stripe_publishable_test: s.stripe_publishable_test || null,
+      stripe_publishable_live: s.stripe_publishable_live || null,
+      mode: s.mode,
+    })
+    .eq('id', 1);
+  if (error) return { ok: false, error: error.message };
+  return { ok: true };
+}
+
+async function testStripeConnection(mode: 'test' | 'live'): Promise<{ ok: boolean; country?: string; error?: string }> {
+  try {
+    const { data, error } = await supabase.functions.invoke('test-stripe-key', { body: { mode } });
+    if (error) return { ok: false, error: error.message };
+    if (!data?.ok) return { ok: false, error: data?.error ?? 'Unknown error' };
+    return { ok: true, country: data.country };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
 export function SettingsView({ showToast }: SettingsViewProps) {
   const [settingsTab, setSettingsTab] = useState('algemeen');
   const [settings, setSettings] = useState<AdminSettings>(() => loadSettings());
   const [dirty, setDirty] = useState<Record<string, boolean>>({});
 
+  const [payment, setPayment] = useState<PaymentSettings>(blankPaymentSettings);
+  const [paymentLoaded, setPaymentLoaded] = useState(false);
+  const [testing, setTesting] = useState(false);
+
   useEffect(() => {
-    // Re-load on tab switch in case external change
     setSettings(loadSettings());
+    loadPaymentSettings().then((p) => {
+      setPayment(p);
+      setPaymentLoaded(true);
+    });
   }, []);
+
+  const updatePayment = <K extends keyof PaymentSettings>(key: K, value: PaymentSettings[K]) => {
+    setPayment((prev) => ({ ...prev, [key]: value }));
+    setDirty((d) => ({ ...d, betalingen: true }));
+  };
+
+  const handleTestStripe = async () => {
+    setTesting(true);
+    const before = await savePaymentSettings(payment);
+    if (!before.ok) {
+      setTesting(false);
+      showToast(`✗ Opslaan mislukt: ${before.error}`);
+      return;
+    }
+    const result = await testStripeConnection(payment.mode);
+    const fresh = await loadPaymentSettings();
+    setPayment(fresh);
+    setTesting(false);
+    if (result.ok) {
+      showToast(`✓ Stripe verbonden — land: ${result.country ?? 'onbekend'}`);
+    } else {
+      showToast(`✗ Stripe-verbinding mislukt: ${result.error}`);
+    }
+  };
+
+  const handleSavePayments = async () => {
+    const r = await savePaymentSettings(payment);
+    if (r.ok) {
+      setDirty((d) => { const n = { ...d }; delete n.betalingen; return n; });
+      showToast('✓ Betalingsinstellingen opgeslagen');
+    } else {
+      showToast(`✗ Opslaan mislukt: ${r.error}`);
+    }
+  };
 
   const update = <K extends keyof AdminSettings>(key: K, value: AdminSettings[K]) => {
     setSettings(prev => ({ ...prev, [key]: value }));
@@ -247,12 +356,13 @@ export function SettingsView({ showToast }: SettingsViewProps) {
               </div>
               <div className="space-y-3">
                 {[
-                  { name: '1-op-1 Zwemles', prices: '€39/les', cards: `10× €${settings.card10x1on1} · 5× €${settings.card5x1on1} · 3× €${settings.card3x1on1}`, active: true },
-                  { name: '1-op-2 Zwemles', prices: '€28/les', cards: `10× €${settings.card10x1on2}`, active: true },
-                  { name: '1-op-3 Zwemles', prices: '€22/les', cards: '—', active: true },
-                  { name: 'Survival Training', prices: '€45/les', cards: '—', active: true },
-                  { name: 'Vakantie 1-op-1', prices: '€39/les', cards: '—', active: true },
-                  { name: 'Diploma examen', prices: 'Variabel', cards: '—', active: false },
+                  // Walter 2026-05-13/19 — friendly customer-facing labels, no 1-op-X.
+                  { name: 'Privéles', prices: '€39 / les', desc: 'Individuele les — 1 instructeur + 1 leerling', active: true },
+                  { name: 'Duoles', prices: '€28 / les', desc: 'Gedeelde les — 1 instructeur + 2 leerlingen', active: true },
+                  { name: 'Trioles', prices: '€22 / les', desc: 'Groepsles — 1 instructeur + 3 leerlingen', active: true },
+                  { name: 'Survival Training', prices: '€45 / les', desc: 'Mini Survival voor jonge kinderen', active: true },
+                  { name: 'Vakantie-zwemles', prices: '€39 / les', desc: 'Extra lessen tijdens schoolvakanties', active: true },
+                  { name: 'Diploma examen', prices: 'Variabel', desc: 'Examenkosten worden per kandidaat berekend', active: false },
                 ].map(p => (
                   <div key={p.name} className={`p-4 rounded-xl border flex items-center justify-between ${p.active ? 'border-[#E8ECF4]' : 'border-[#E8ECF4] opacity-50'}`}>
                     <div className="flex items-center gap-3">
@@ -262,7 +372,7 @@ export function SettingsView({ showToast }: SettingsViewProps) {
                           <p className="text-[#1A1A2E]" style={{ fontSize: 14, fontWeight: 600 }}>{p.name}</p>
                           {!p.active && <span className="text-[#A0AEC0] px-2 py-0.5 rounded-full bg-[#F4F7FC]" style={{ fontSize: 10 }}>Inactief</span>}
                         </div>
-                        <p className="text-[#6B7B94]" style={{ fontSize: 12 }}>{p.prices} | Knipkaarten: {p.cards}</p>
+                        <p className="text-[#6B7B94]" style={{ fontSize: 12 }}>{p.prices} · {p.desc}</p>
                       </div>
                     </div>
                     <div className="flex items-center gap-2">
@@ -272,7 +382,7 @@ export function SettingsView({ showToast }: SettingsViewProps) {
                   </div>
                 ))}
               </div>
-              <p className="text-[#A0AEC0] mt-4 text-center" style={{ fontSize: 11 }}>Knipkaart-prijzen kunnen aangepast worden in <button onClick={() => setSettingsTab('betalingen')} className="text-[#0365C4] hover:underline">Betalingen</button></p>
+              <p className="text-[#A0AEC0] mt-4 text-center" style={{ fontSize: 11 }}>Tegoed-pakketten kunnen aangepast worden in <button onClick={() => setSettingsTab('betalingen')} className="text-[#0365C4] hover:underline">Betalingen</button></p>
             </Card>
           )}
 
@@ -285,7 +395,7 @@ export function SettingsView({ showToast }: SettingsViewProps) {
                   { name: 'Herinnering 24 uur', desc: 'Automatische herinnering 24u voor de les', status: 'Actief', lastEdit: '10-03-2026' },
                   { name: 'Herinnering 48 uur (vakantie)', desc: '96u herinnering voor vakantielessen', status: 'Actief', lastEdit: '10-03-2026' },
                   { name: 'Annuleringsbevestiging', desc: 'Bij annulering door klant of admin', status: 'Actief', lastEdit: '08-03-2026' },
-                  { name: 'Knipkaart bijna op', desc: 'Wanneer er nog 1 les resterend is', status: 'Actief', lastEdit: '05-03-2026' },
+                  { name: 'Tegoed bijna op', desc: 'Wanneer het tegoed-saldo lager is dan één les', status: 'Actief', lastEdit: '05-03-2026' },
                   { name: 'Factuur', desc: 'Factuur PDF als bijlage', status: 'Actief', lastEdit: '01-03-2026' },
                   { name: 'Welkomstmail', desc: 'Na goedkeuring registratie', status: 'Actief', lastEdit: '20-02-2026' },
                   { name: 'Voortgangsrapport', desc: 'Maandelijks voortgangsoverzicht', status: 'Concept', lastEdit: '15-02-2026' },
@@ -326,46 +436,138 @@ export function SettingsView({ showToast }: SettingsViewProps) {
                   <div className="flex items-center justify-between mb-3">
                     <div className="flex items-center gap-2">
                       <div className="w-8 h-8 rounded-lg bg-[#27AE60]/10 flex items-center justify-center"><CreditCard size={16} className="text-[#27AE60]" /></div>
-                      <h4 className="text-[#1A1A2E]" style={{ fontSize: 15, fontWeight: 700 }}>Stripe / Mollie</h4>
-                      <StatusBadge status="Actief" />
+                      <h4 className="text-[#1A1A2E]" style={{ fontSize: 15, fontWeight: 700 }}>Stripe</h4>
+                      <StatusBadge status={payment.last_test_ok ? 'Actief' : 'Concept'} />
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-[#6B7B94]" style={{ fontSize: 12, fontWeight: 600 }}>Modus:</span>
+                      <button
+                        onClick={() => updatePayment('mode', 'test')}
+                        className="px-3 py-1 rounded-lg"
+                        style={{ background: payment.mode === 'test' ? '#FFF3CD' : '#F8FAFC', color: payment.mode === 'test' ? '#92400E' : '#6B7B94', fontSize: 11, fontWeight: 700, border: payment.mode === 'test' ? '1px solid #F59E0B' : '1px solid #E8ECF4' }}
+                      >TEST</button>
+                      <button
+                        onClick={() => updatePayment('mode', 'live')}
+                        className="px-3 py-1 rounded-lg"
+                        style={{ background: payment.mode === 'live' ? '#D1FAE5' : '#F8FAFC', color: payment.mode === 'live' ? '#065F46' : '#6B7B94', fontSize: 11, fontWeight: 700, border: payment.mode === 'live' ? '1px solid #10B981' : '1px solid #E8ECF4' }}
+                      >LIVE</button>
                     </div>
                   </div>
-                  <div className="grid grid-cols-2 gap-4">
+
+                  <div className="bg-[#EFF6FF] border border-[#BFDBFE] rounded-lg p-3 mb-4 flex gap-2">
+                    <AlertCircle size={16} className="text-[#1D4ED8] flex-shrink-0 mt-0.5" />
                     <div>
-                      <label className="text-[#6B7B94] block mb-1" style={{ fontSize: 12, fontWeight: 600 }}>API Key (Live)</label>
-                      <input
-                        type="password"
-                        value={settings.mollieKeyLive}
-                        onChange={e => update('mollieKeyLive', e.target.value)}
-                        className="w-full px-3 py-2.5 rounded-lg border border-[#E8ECF4] outline-none text-[#1A1A2E] font-mono"
-                        style={{ fontSize: 13 }}
-                      />
-                    </div>
-                    <div>
-                      <label className="text-[#6B7B94] block mb-1" style={{ fontSize: 12, fontWeight: 600 }}>API Key (Test)</label>
-                      <input
-                        type="password"
-                        value={settings.mollieKeyTest}
-                        onChange={e => update('mollieKeyTest', e.target.value)}
-                        className="w-full px-3 py-2.5 rounded-lg border border-[#E8ECF4] outline-none text-[#1A1A2E] font-mono"
-                        style={{ fontSize: 13 }}
-                      />
+                      <p className="text-[#1E40AF]" style={{ fontSize: 12, fontWeight: 600 }}>Hoe verbind ik mijn Stripe-account?</p>
+                      <p className="text-[#3B82F6] mt-0.5" style={{ fontSize: 11 }}>
+                        1. Ga naar <a href="https://dashboard.stripe.com/apikeys" target="_blank" rel="noopener noreferrer" className="underline">dashboard.stripe.com/apikeys</a><br/>
+                        2. Kopieer de "Publishable key" en "Secret key"<br/>
+                        3. Plak ze hieronder en klik op "Verbinding testen"
+                      </p>
                     </div>
                   </div>
-                  <p className="text-[#A0AEC0] mt-2" style={{ fontSize: 11 }}>Methoden: iDEAL, Creditcard, Bancontact, Apple Pay</p>
+
+                  <div className="space-y-3">
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="text-[#6B7B94] block mb-1" style={{ fontSize: 12, fontWeight: 600 }}>
+                          Publishable Key (Test) <span className="text-[#A0AEC0] font-normal">pk_test_...</span>
+                        </label>
+                        <input
+                          type="text"
+                          value={paymentLoaded ? payment.stripe_publishable_test : ''}
+                          onChange={(e) => updatePayment('stripe_publishable_test', e.target.value)}
+                          placeholder="pk_test_..."
+                          className="w-full px-3 py-2.5 rounded-lg border border-[#E8ECF4] outline-none focus:border-[#0365C4] text-[#1A1A2E] font-mono"
+                          style={{ fontSize: 12 }}
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[#6B7B94] block mb-1" style={{ fontSize: 12, fontWeight: 600 }}>
+                          Secret Key (Test) <span className="text-[#A0AEC0] font-normal">sk_test_...</span>
+                        </label>
+                        <input
+                          type="password"
+                          value={paymentLoaded ? payment.stripe_secret_test : ''}
+                          onChange={(e) => updatePayment('stripe_secret_test', e.target.value)}
+                          placeholder="sk_test_..."
+                          className="w-full px-3 py-2.5 rounded-lg border border-[#E8ECF4] outline-none focus:border-[#0365C4] text-[#1A1A2E] font-mono"
+                          style={{ fontSize: 12 }}
+                        />
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="text-[#6B7B94] block mb-1" style={{ fontSize: 12, fontWeight: 600 }}>
+                          Publishable Key (Live) <span className="text-[#A0AEC0] font-normal">pk_live_...</span>
+                        </label>
+                        <input
+                          type="text"
+                          value={paymentLoaded ? payment.stripe_publishable_live : ''}
+                          onChange={(e) => updatePayment('stripe_publishable_live', e.target.value)}
+                          placeholder="pk_live_..."
+                          className="w-full px-3 py-2.5 rounded-lg border border-[#E8ECF4] outline-none focus:border-[#0365C4] text-[#1A1A2E] font-mono"
+                          style={{ fontSize: 12 }}
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[#6B7B94] block mb-1" style={{ fontSize: 12, fontWeight: 600 }}>
+                          Secret Key (Live) <span className="text-[#A0AEC0] font-normal">sk_live_...</span>
+                        </label>
+                        <input
+                          type="password"
+                          value={paymentLoaded ? payment.stripe_secret_live : ''}
+                          onChange={(e) => updatePayment('stripe_secret_live', e.target.value)}
+                          placeholder="sk_live_..."
+                          className="w-full px-3 py-2.5 rounded-lg border border-[#E8ECF4] outline-none focus:border-[#0365C4] text-[#1A1A2E] font-mono"
+                          style={{ fontSize: 12 }}
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between mt-4 pt-4 border-t border-[#E8ECF4]">
+                    <div>
+                      {payment.last_tested_at ? (
+                        <div className="flex items-center gap-2">
+                          {payment.last_test_ok ? (
+                            <Check size={14} className="text-[#10B981]" />
+                          ) : (
+                            <AlertCircle size={14} className="text-[#EF4444]" />
+                          )}
+                          <span className="text-[#6B7B94]" style={{ fontSize: 11 }}>
+                            Laatst getest: {new Date(payment.last_tested_at).toLocaleString('nl-NL')}
+                            {payment.last_test_country && <> · Land: <strong>{payment.last_test_country}</strong></>}
+                          </span>
+                        </div>
+                      ) : (
+                        <span className="text-[#A0AEC0]" style={{ fontSize: 11 }}>Nog niet getest</span>
+                      )}
+                    </div>
+                    <button
+                      onClick={handleTestStripe}
+                      disabled={testing}
+                      className="flex items-center gap-2 px-4 py-2 rounded-lg text-white disabled:opacity-50"
+                      style={{ background: '#7C3AED', fontSize: 13, fontWeight: 600 }}
+                    >
+                      {testing ? <Loader2 size={14} className="animate-spin" /> : <Zap size={14} />}
+                      {testing ? 'Testen...' : 'Verbinding testen'}
+                    </button>
+                  </div>
+
+                  <p className="text-[#A0AEC0] mt-3" style={{ fontSize: 11 }}>Methoden: iDEAL, Creditcard, Apple Pay · Voor iDEAL is een Stripe Nederland-account vereist.</p>
                 </div>
 
                 <div className="p-4 rounded-xl border border-[#E8ECF4]">
-                  <h4 className="text-[#1A1A2E] mb-3" style={{ fontSize: 15, fontWeight: 700 }}>Knipkaart-prijzen</h4>
+                  <h4 className="text-[#1A1A2E] mb-3" style={{ fontSize: 15, fontWeight: 700 }}>Tegoed-pakketten</h4>
                   <p className="text-[#A0AEC0] mb-3" style={{ fontSize: 11 }}>
-                    Walter's Apr 22 packages: €200 → €202 / €400 → €405 / €1000 → €1015 (gewijzigd in mobiel; hier voor admin reference)
+                    Walter's Apr 22 packages: €200 → €202 / €400 → €405 / €1000 → €1015. Lessen worden van het tegoed afgeboekt op basis van lestype.
                   </p>
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                     {([
-                      ['card10x1on1', '10× 1-op-1'],
-                      ['card5x1on1', '5× 1-op-1'],
-                      ['card3x1on1', '3× 1-op-1'],
-                      ['card10x1on2', '10× 1-op-2'],
+                      ['card10x1on1', '10× Privéles'],
+                      ['card5x1on1', '5× Privéles'],
+                      ['card3x1on1', '3× Privéles'],
+                      ['card10x1on2', '10× Duoles'],
                     ] as const).map(([key, label]) => (
                       <div key={key}>
                         <label className="text-[#6B7B94] block mb-1" style={{ fontSize: 11, fontWeight: 600 }}>{label}</label>
@@ -385,7 +587,7 @@ export function SettingsView({ showToast }: SettingsViewProps) {
                 </div>
 
                 <button
-                  onClick={() => persistTab('betalingen', 'Betalingsinstellingen')}
+                  onClick={() => { persistTab('betalingen', 'Tegoed-pakketten'); handleSavePayments(); }}
                   disabled={!dirty['betalingen']}
                   className="px-6 py-2.5 rounded-lg text-white disabled:opacity-50 flex items-center gap-2"
                   style={{ background: '#0365C4', fontSize: 14, fontWeight: 700 }}

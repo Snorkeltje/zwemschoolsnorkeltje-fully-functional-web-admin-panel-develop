@@ -135,10 +135,14 @@ export interface AdminCustomerDetail {
 export async function fetchCustomerDetail(parentId: string): Promise<AdminCustomerDetail | null> {
   const { data: profile, error: pe } = await supabase
     .from('profiles')
-    .select('id, first_name, last_name, email, phone, city, address, created_at, last_login_at')
+    .select('id, first_name, last_name, email, phone, city, created_at')
     .eq('id', parentId)
     .maybeSingle();
-  if (pe || !profile) return null;
+  if (pe) {
+    console.warn('fetchCustomerDetail profile error:', pe);
+    return null;
+  }
+  if (!profile) return null;
 
   // Children
   const { data: kids } = await supabase
@@ -289,10 +293,10 @@ export async function fetchCustomerDetail(parentId: string): Promise<AdminCustom
     email: (profile.email as string) ?? '',
     phone: (profile.phone as string) ?? '',
     city: (profile.city as string) ?? '',
-    address: (profile.address as string) ?? null,
+    address: null,
     status,
     createdAt: profile.created_at as string,
-    lastLoginAt: (profile.last_login_at as string) ?? null,
+    lastLoginAt: null,
     children,
     reservations: resMapped,
     walletBalanceCents,
@@ -305,7 +309,9 @@ export async function updateCustomerProfile(
   id: string,
   fields: { first_name?: string; last_name?: string; phone?: string; city?: string; address?: string },
 ): Promise<{ ok: boolean; error?: string }> {
-  const { error } = await supabase.from('profiles').update(fields).eq('id', id);
+  // `address` column doesn't exist on profiles yet — strip it before write.
+  const { address: _address, ...safeFields } = fields;
+  const { error } = await supabase.from('profiles').update(safeFields).eq('id', id);
   if (error) return { ok: false, error: error.message };
   return { ok: true };
 }
@@ -406,12 +412,11 @@ export async function createReservationFromForm(
     if (!locs?.length) return { ok: false, error: 'Geen actieve locatie gevonden' };
     const locationId = locs[0].id as string;
 
-    // 2. First instructor (best-effort)
+    // 2. First instructor (best-effort) — profiles has no `active` column.
     const { data: instr } = await supabase
       .from('profiles')
       .select('id')
       .eq('role', 'instructor')
-      .eq('active', true)
       .limit(1);
     if (!instr?.length) return { ok: false, error: 'Geen actieve instructeur gevonden' };
     const instructorId = instr[0].id as string;
@@ -444,7 +449,7 @@ export async function createReservationFromForm(
       lessonId = created.id as string;
     }
 
-    // 4. Insert reservation
+    // 4. Insert reservation — `notes` column doesn't exist on reservations yet.
     const { data: r, error: resErr } = await supabase.from('reservations').insert({
       lesson_id: lessonId,
       parent_id: input.parentId,
@@ -453,7 +458,6 @@ export async function createReservationFromForm(
       payment_method: input.paymentMethod,
       payment_status: input.paymentMethod === 'invoice' ? 'pending' : 'paid',
       amount_cents: input.amountCents,
-      notes: input.notes ?? null,
     }).select('id').single();
     if (resErr || !r) return { ok: false, error: resErr?.message ?? 'Reservering insert mislukt' };
 
@@ -1166,16 +1170,29 @@ export interface AdminWaitlistEntry {
   parentName: string;
   childName: string;
   preferredDays: string[];
+  preferredLocationIds: string[];
+  preferredLocationNames: string[];
+  preferredTimeStart: string | null;   // HH:MM:SS or null
+  preferredTimeEnd: string | null;
   position: number;
   registrationFeePaid: boolean;
   joinedAt: string;
 }
 
 export async function fetchWaitlist(): Promise<AdminWaitlistEntry[]> {
+  // 1. Load every location once so we can map IDs → names without an N+1
+  const { data: locs } = await supabase
+    .from('locations')
+    .select('id, name');
+  const locById = new Map<string, string>(
+    (locs ?? []).map(l => [l.id as string, l.name as string])
+  );
+
   const { data } = await supabase
     .from('waitlist')
     .select(`
-      id, preferred_days, position, registration_fee_paid, joined_at,
+      id, preferred_days, preferred_location_ids, preferred_time_start, preferred_time_end,
+      position, registration_fee_paid, joined_at,
       profiles:parent_id ( first_name, last_name ),
       children:child_id ( first_name, last_name )
     `)
@@ -1184,16 +1201,30 @@ export async function fetchWaitlist(): Promise<AdminWaitlistEntry[]> {
   return (data ?? []).map(w => {
     const p = w.profiles as { first_name?: string; last_name?: string } | null;
     const c = w.children as { first_name?: string; last_name?: string } | null;
+    const locIds = (w.preferred_location_ids as string[]) ?? [];
     return {
       id: w.id as string,
       parentName: `${p?.first_name ?? ''} ${p?.last_name ?? ''}`.trim() || 'Onbekend',
       childName: `${c?.first_name ?? ''} ${c?.last_name ?? ''}`.trim(),
       preferredDays: ((w.preferred_days as string[]) ?? []),
+      preferredLocationIds: locIds,
+      preferredLocationNames: locIds.map(id => locById.get(id) ?? '?').filter(n => n !== '?'),
+      preferredTimeStart: (w.preferred_time_start as string | null) ?? null,
+      preferredTimeEnd: (w.preferred_time_end as string | null) ?? null,
       position: (w.position as number) ?? 0,
       registrationFeePaid: (w.registration_fee_paid as boolean) ?? false,
       joinedAt: w.joined_at as string,
     };
   });
+}
+
+/// Walter 2026-05-18 — admin can remove a wachtlijst entry directly from the
+/// overview. Cascade-deletes the waitlist_offers via the existing FK ON
+/// DELETE CASCADE so we don't need to clean up anywhere else.
+export async function deleteWaitlistEntry(id: string): Promise<{ ok: boolean; error?: string }> {
+  const { error } = await supabase.from('waitlist').delete().eq('id', id);
+  if (error) return { ok: false, error: error.message };
+  return { ok: true };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1375,6 +1406,70 @@ export interface CurriculumItem {
   id: string;
   description: string;
   stepOrder: number;
+}
+
+// ─── Cascade + level derivation (mirrors mobile app — Walter 2026-05-13) ───
+
+/// Walter 2026-05-13: "Step 2 should only become available once Step 1 has
+/// been fully completed (or the two parts of Step 1: floating on the back
+/// and independent movement). The same should apply for all following steps."
+///
+/// Default rule:    all items at fase 4.
+/// Step 1 exception: also unlocks when the "basisvaardigheden" group
+///                   (zelfstandig op de rug drijven + zich voortbewegen)
+///                   is on fase 4.
+export function isStepCompleteForUnlock(
+  step: CurriculumStep,
+  phases: Record<string, number>,
+): boolean {
+  const allItems = step.groups.flatMap(g => g.items);
+  if (allItems.length === 0) return false;
+  const atFase4 = (it: CurriculumItem) => (phases[it.id] ?? 1) >= 4;
+
+  if (allItems.every(atFase4)) return true;
+
+  if (step.level === 'Stap 1') {
+    const basis = step.groups
+      .filter(g => g.category === 'basisvaardigheden')
+      .flatMap(g => g.items);
+    if (basis.length > 0 && basis.every(atFase4)) return true;
+  }
+  return false;
+}
+
+/// Walter 2026-05-13 — derive the child's level automatically from their
+/// cumulative progress through the curriculum. Admin and mobile MUST stay
+/// in sync. Rules (cumulative — last matching wins):
+///   • 0–2 stappen mastered     → "Beginner"
+///   • 3–5 stappen mastered     → "Gevorderd Beginner"
+///   • 6–7 stappen mastered     → "Gevorderd"
+///   • Diploma A items mastered → "Diploma A"
+///   • Diploma B items mastered → "Diploma B"
+///   • Diploma C items mastered → "Diploma C"
+export function deriveChildLevel(
+  steps: CurriculumStep[],
+  phases: Record<string, number>,
+): string {
+  const stepDone = (s: CurriculumStep) => {
+    const items = s.groups.flatMap(g => g.items);
+    return items.length > 0 && items.every(it => (phases[it.id] ?? 1) >= 4);
+  };
+
+  const stappen = steps
+    .filter(s => !s.level.startsWith('Diploma '))
+    .sort((a, b) => a.sortOrder - b.sortOrder);
+  const stappenDone = stappen.filter(stepDone).length;
+
+  let level: string;
+  if (stappenDone <= 2) level = 'Beginner';
+  else if (stappenDone <= 5) level = 'Gevorderd Beginner';
+  else level = 'Gevorderd';
+
+  for (const letter of ['A', 'B', 'C']) {
+    const diploma = steps.find(s => s.level === `Diploma ${letter}`);
+    if (diploma && stepDone(diploma)) level = `Diploma ${letter}`;
+  }
+  return level;
 }
 
 // ─── Per-child progress ───

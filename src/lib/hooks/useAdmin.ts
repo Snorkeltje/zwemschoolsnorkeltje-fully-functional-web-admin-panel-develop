@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   fetchAdminNotifications,
   fetchAllChildren,
@@ -45,15 +45,23 @@ interface AsyncResult<T> {
   refresh: () => Promise<void>;
 }
 
-function _useAsync<T>(loader: () => Promise<T>): AsyncResult<T> {
+/// Gated async loader. When `enabled` is false, the loader is not fired.
+/// This lets AdminDashboardScreen defer sidebar-view queries until the user
+/// actually navigates to that view — cutting first-paint from 26+ queries down
+/// to just the ones needed for the current tab. A cache guarantees that once
+/// a view has loaded its data, re-visiting the view does not re-fetch.
+function _useAsync<T>(loader: () => Promise<T>, enabled: boolean = true): AsyncResult<T> {
   const [data, setData] = useState<T | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState<boolean>(enabled);
   const [error, setError] = useState<string | null>(null);
+  const hasLoadedRef = useRef(false);
+
   const refresh = async () => {
     setLoading(true);
     setError(null);
     try {
       setData(await loader());
+      hasLoadedRef.current = true;
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       // eslint-disable-next-line no-console
@@ -62,15 +70,19 @@ function _useAsync<T>(loader: () => Promise<T>): AsyncResult<T> {
       setLoading(false);
     }
   };
-  useEffect(() => { refresh(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
+  useEffect(() => {
+    if (enabled && !hasLoadedRef.current) refresh();
+    else if (!enabled && !hasLoadedRef.current) setLoading(false);
+    /* eslint-disable-next-line react-hooks/exhaustive-deps */
+  }, [enabled]);
   return { data, loading, error, refresh };
 }
 
-export const useCustomers = () => _useAsync<AdminCustomer[]>(fetchCustomers);
-export const useExamCandidates = () => _useAsync<AdminExamCandidate[]>(fetchExamCandidates);
-export const useWaitlistOffers = () => _useAsync<AdminWaitlistOffer[]>(fetchWaitlistOffers);
-export const useAllInvoices = () => _useAsync<AdminInvoice[]>(fetchAllInvoices);
-export const useAllPayments = () => _useAsync<AdminPayment[]>(fetchAllPayments);
+export const useCustomers = (enabled: boolean = true) => _useAsync<AdminCustomer[]>(fetchCustomers, enabled);
+export const useExamCandidates = (enabled: boolean = true) => _useAsync<AdminExamCandidate[]>(fetchExamCandidates, enabled);
+export const useWaitlistOffers = (enabled: boolean = true) => _useAsync<AdminWaitlistOffer[]>(fetchWaitlistOffers, enabled);
+export const useAllInvoices = (enabled: boolean = true) => _useAsync<AdminInvoice[]>(fetchAllInvoices, enabled);
+export const useAllPayments = (enabled: boolean = true) => _useAsync<AdminPayment[]>(fetchAllPayments, enabled);
 
 /// Returns the full detail bundle for one parent.
 /// Pass an empty string to skip loading (returns null/loaded=false).
@@ -88,16 +100,16 @@ export function useCustomerDetail(parentId: string): AsyncResult<AdminCustomerDe
   useEffect(() => { refresh(); /* eslint-disable-next-line */ }, [parentId]);
   return { data, loading, error, refresh, reload: refresh };
 }
-export const useAllReservations = () => _useAsync<AdminReservation[]>(fetchAllReservations);
-export const useLocationsList = () => _useAsync<AdminLocation[]>(fetchLocations);
-export const useInstructors = () => _useAsync<AdminInstructor[]>(fetchInstructors);
-export const useWallets = () => _useAsync<AdminWallet[]>(fetchWallets);
-export const useAllReviews = () => _useAsync<AdminReview[]>(fetchAllReviews);
-export const useWaitlist = () => _useAsync<AdminWaitlistEntry[]>(fetchWaitlist);
-export const useVacationRequests = () => _useAsync<AdminVacationRequest[]>(fetchVacationRequests);
-export const useSkills = () => _useAsync<AdminSkill[]>(fetchAllSkills);
-export const useCurriculum = () => _useAsync<CurriculumStep[]>(fetchCurriculum);
-export const useAllChildren = () => _useAsync<ChildSummary[]>(fetchAllChildren);
+export const useAllReservations = (enabled: boolean = true) => _useAsync<AdminReservation[]>(fetchAllReservations, enabled);
+export const useLocationsList = (enabled: boolean = true) => _useAsync<AdminLocation[]>(fetchLocations, enabled);
+export const useInstructors = (enabled: boolean = true) => _useAsync<AdminInstructor[]>(fetchInstructors, enabled);
+export const useWallets = (enabled: boolean = true) => _useAsync<AdminWallet[]>(fetchWallets, enabled);
+export const useAllReviews = (enabled: boolean = true) => _useAsync<AdminReview[]>(fetchAllReviews, enabled);
+export const useWaitlist = (enabled: boolean = true) => _useAsync<AdminWaitlistEntry[]>(fetchWaitlist, enabled);
+export const useVacationRequests = (enabled: boolean = true) => _useAsync<AdminVacationRequest[]>(fetchVacationRequests, enabled);
+export const useSkills = (enabled: boolean = true) => _useAsync<AdminSkill[]>(fetchAllSkills, enabled);
+export const useCurriculum = (enabled: boolean = true) => _useAsync<CurriculumStep[]>(fetchCurriculum, enabled);
+export const useAllChildren = (enabled: boolean = true) => _useAsync<ChildSummary[]>(fetchAllChildren, enabled);
 /// Notifications inbox for the current admin user, with realtime updates.
 /// Returns the items + unread count + a refresh function.
 export function useAdminNotifications() {

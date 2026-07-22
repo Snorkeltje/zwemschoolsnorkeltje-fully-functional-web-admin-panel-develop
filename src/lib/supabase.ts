@@ -30,13 +30,19 @@ export const supabase = createClient(url, anon, {
 });
 
 /// Helper: load profile + role for the currently signed-in user.
-export async function fetchCurrentProfile() {
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return null;
+/// Accepts an optional pre-fetched user id to skip the extra network round trip
+/// that `supabase.auth.getUser()` would otherwise make.
+export async function fetchCurrentProfile(userId?: string) {
+  let id = userId;
+  if (!id) {
+    const session = (await supabase.auth.getSession()).data.session;
+    id = session?.user?.id;
+  }
+  if (!id) return null;
   const { data, error } = await supabase
     .from('profiles')
     .select('id, email, first_name, last_name, role, phone, city')
-    .eq('id', user.id)
+    .eq('id', id)
     .single();
   if (error) {
     console.warn('fetchCurrentProfile error:', error);
