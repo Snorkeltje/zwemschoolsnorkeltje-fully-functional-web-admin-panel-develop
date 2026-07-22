@@ -1,8 +1,16 @@
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import { useNavigate } from 'react-router';
 import { Lock, Mail, Eye, EyeOff, Waves, Shield } from 'lucide-react';
 import { useAuth } from '../../lib/auth-context';
 import { SnorkeltjeLogo } from '../components/SnorkeltjeLogo';
+
+/// Kick off the AdminDashboardScreen chunk download in parallel with the
+/// auth call. By the time signInWithPassword resolves (~300–500 ms), the
+/// dashboard bundle is usually already parsed and ready to render, so the
+/// user does not stare at a spinner while the JS is fetched.
+function prefetchDashboardChunk() {
+  return import('./admin/AdminDashboardScreen');
+}
 
 export function AdminLoginScreen() {
   const navigate = useNavigate();
@@ -12,11 +20,22 @@ export function AdminLoginScreen() {
   const [showPwd, setShowPwd] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const prefetchStartedRef = useRef(false);
+
+  function warmDashboard() {
+    if (prefetchStartedRef.current) return;
+    prefetchStartedRef.current = true;
+    prefetchDashboardChunk().catch(() => {
+      // Silently ignore — the real navigation will retry the import.
+      prefetchStartedRef.current = false;
+    });
+  }
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
     setSubmitting(true);
+    warmDashboard();
     const result = await signIn(email.trim(), password);
     setSubmitting(false);
     if (result.error) {
@@ -85,6 +104,7 @@ export function AdminLoginScreen() {
                   type="email"
                   value={email}
                   required
+                  onFocus={warmDashboard}
                   onChange={(e) => setEmail(e.target.value)}
                   className="w-full pl-10 pr-3 py-3 rounded-xl bg-white/5 border border-white/10 text-white placeholder-white/30 outline-none focus:border-[#00C1FF] focus:ring-2 focus:ring-[#00C1FF]/30 transition"
                   placeholder="naam@snorkeltje.nl"

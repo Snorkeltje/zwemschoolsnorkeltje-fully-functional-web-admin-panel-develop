@@ -7,6 +7,8 @@ import { ReportsView } from '../../components/admin/ReportsView';
 import { SettingsView } from '../../components/admin/SettingsView';
 import { ReservationDetailView } from '../../components/admin/ReservationDetailView';
 import { ProfileView } from '../../components/admin/ProfileView';
+import { AdminUsersView } from '../../components/admin/AdminUsersView';
+import { AdminRolesView } from '../../components/admin/AdminRolesView';
 import {
   Users, Calendar, FileText, CreditCard, DollarSign, TrendingUp, TrendingDown,
   ArrowUpRight, ArrowDownRight, Eye, Edit2, Trash2, Plus, Search, Filter,
@@ -4113,6 +4115,22 @@ export function AdminDashboardScreen() {
 
       {/* ═══════ SETTINGS ═══════ */}
       {view === 'settings' && <SettingsView showToast={showToast} />}
+
+      {/* ═══════ ADMIN USERS (RBAC — Walter 2026-07-22) ═══════ */}
+      {view === 'admin-users' && (
+        <AdminUsersView
+          onNavigateRoles={() => goTo('admin-roles')}
+          showToast={showToast}
+        />
+      )}
+
+      {/* ═══════ ADMIN ROLES & PERMISSIONS (RBAC — Walter 2026-07-22) ═══════ */}
+      {view === 'admin-roles' && (
+        <AdminRolesView
+          onNavigateBack={() => goTo('admin-users')}
+          showToast={showToast}
+        />
+      )}
 
       {/* ═══════ HELP & SUPPORT ═══════ */}
       {view === 'help-support' && (

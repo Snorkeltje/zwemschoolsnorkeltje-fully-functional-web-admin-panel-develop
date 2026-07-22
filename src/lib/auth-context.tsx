@@ -117,10 +117,35 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const { data, error } = await supabase.auth.signInWithPassword({ email, password });
     if (error) return { error: friendly(error.message) };
     if (!data.session) return { error: 'Geen sessie ontvangen — probeer opnieuw.' };
-    // Walter 2026-05-01: only admin users may access the dashboard.
-    // Pass the user id we already have from the signIn response — this skips
-    // the extra supabase.auth.getUser() network round-trip inside
-    // fetchCurrentProfile and shaves a full RTT off the login flow.
+
+    // Fast path: if we have a cached admin profile that matches this email, trust
+    // it optimistically so the button unlocks immediately (< 500 ms round-trip
+    // instead of waiting on a second profile round-trip). The onAuthStateChange
+    // listener will refresh the profile in the background; RequireAdmin will
+    // downgrade access if the refreshed role is not "admin".
+    const cached = readCachedProfile();
+    if (cached && cached.email?.toLowerCase() === email.trim().toLowerCase() && cached.role === 'admin') {
+      setProfile(cached);
+      // Background verify — do NOT await, do NOT block the login button.
+      void (async () => {
+        try {
+          const fresh = await fetchCurrentProfile(data.session!.user.id) as AdminProfile | null;
+          if (fresh) {
+            setProfile(fresh);
+            writeCachedProfile(fresh);
+            if (fresh.role !== 'admin') {
+              await supabase.auth.signOut();
+              writeCachedProfile(null);
+              window.location.replace('/');
+            }
+          }
+        } catch { /* leave cached profile in place */ }
+      })();
+      return {};
+    }
+
+    // Slow path (first login OR different email): fetch profile inline so we can
+    // reject non-admin sign-ins without ever showing the dashboard.
     try {
       const p = await fetchCurrentProfile(data.session.user.id) as AdminProfile | null;
       if (!p || p.role !== 'admin') {

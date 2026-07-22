@@ -50,7 +50,9 @@ export type AdminView =
   | 'waitlist' | 'slot-interest'
   | 'exams' | 'exam-continuation'
   | 'reviews' | 'review-approval'
-  | 'curriculum' | 'curriculum-editor';
+  | 'curriculum' | 'curriculum-editor'
+  // Walter 2026-07-22 additions — admin RBAC
+  | 'admin-users' | 'admin-roles';
 
 interface NavItem {
   id: string;
@@ -147,6 +149,12 @@ const navItems: NavItem[] = [
 
   // === REPORTS / SETTINGS ===
   { id: 'reports', label: 'Rapporten', icon: BarChart3, view: 'reports' },
+  {
+    id: 'admin-team', label: 'Team & rollen', icon: Shield, children: [
+      { label: 'Admin gebruikers', view: 'admin-users' },
+      { label: 'Rollen & rechten', view: 'admin-roles' },
+    ]
+  },
   { id: 'settings', label: 'Instellingen', icon: Settings, view: 'settings' },
 ];
 

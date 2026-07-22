@@ -1601,3 +1601,307 @@ export async function fetchCurriculum(): Promise<CurriculumStep[]> {
     };
   });
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+//   ADMIN RBAC — Roles & Users
+//   Requires: supabase/admin_rbac_migration.sql applied.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Every permission the UI knows about. Keep alphabetical / grouped.
+/// UI groups are computed by taking the string before the ".".
+export const ALL_PERMISSIONS: { slug: string; label: string; group: string }[] = [
+  { slug: 'dashboard.view',      label: 'Dashboard bekijken',              group: 'Dashboard' },
+  { slug: 'customers.view',      label: 'Klanten bekijken',                group: 'Klanten' },
+  { slug: 'customers.edit',      label: 'Klanten bewerken / aanmaken',     group: 'Klanten' },
+  { slug: 'customers.delete',    label: 'Klanten verwijderen',             group: 'Klanten' },
+  { slug: 'children.view',       label: 'Kinderen bekijken',               group: 'Klanten' },
+  { slug: 'reservations.view',   label: 'Reserveringen bekijken',          group: 'Reserveringen' },
+  { slug: 'reservations.edit',   label: 'Reserveringen bewerken',          group: 'Reserveringen' },
+  { slug: 'waitlist.view',       label: 'Wachtlijst bekijken',             group: 'Wachtlijst' },
+  { slug: 'waitlist.edit',       label: 'Wachtlijst beheren',              group: 'Wachtlijst' },
+  { slug: 'invoices.view',       label: 'Facturen bekijken',               group: 'Financieel' },
+  { slug: 'invoices.edit',       label: 'Facturen bewerken',               group: 'Financieel' },
+  { slug: 'payments.view',       label: 'Betalingen bekijken',             group: 'Financieel' },
+  { slug: 'instructors.view',    label: 'Instructeurs bekijken',           group: 'Instructeurs' },
+  { slug: 'instructors.edit',    label: 'Instructeurs bewerken',           group: 'Instructeurs' },
+  { slug: 'messages.view',       label: 'Berichten bekijken',              group: 'Berichten' },
+  { slug: 'messages.send',       label: 'Berichten versturen',             group: 'Berichten' },
+  { slug: 'reviews.view',        label: 'Reviews bekijken',                group: 'Reviews' },
+  { slug: 'reviews.moderate',    label: 'Reviews modereren',               group: 'Reviews' },
+  { slug: 'curriculum.view',     label: 'Lesplan bekijken',                group: 'Lesplan' },
+  { slug: 'curriculum.edit',     label: 'Lesplan bewerken',                group: 'Lesplan' },
+  { slug: 'reports.view',        label: 'Rapporten bekijken',              group: 'Rapporten' },
+  { slug: 'settings.view',       label: 'Instellingen bekijken',           group: 'Instellingen' },
+  { slug: 'settings.edit',       label: 'Instellingen bewerken',           group: 'Instellingen' },
+  { slug: 'admin_users.view',    label: 'Admin gebruikers bekijken',       group: 'Admin' },
+  { slug: 'admin_users.edit',    label: 'Admin gebruikers uitnodigen',     group: 'Admin' },
+  { slug: 'admin_roles.view',    label: 'Rollen bekijken',                 group: 'Admin' },
+  { slug: 'admin_roles.edit',    label: 'Rollen aanmaken / bewerken',      group: 'Admin' },
+];
+
+export interface AdminRole {
+  id: string;
+  name: string;
+  description: string | null;
+  permissions: string[];
+  isSystem: boolean;
+  createdAt: string;
+  memberCount: number;
+}
+
+export interface AdminUser {
+  id: string;
+  email: string;
+  firstName: string;
+  lastName: string;
+  phone: string | null;
+  createdAt: string;
+  roleId: string | null;
+  roleName: string;         // "Super Admin" when roleId is null.
+  status: 'active' | 'pending';
+}
+
+export interface AdminInviteResult {
+  ok: boolean;
+  temporaryPassword?: string;
+  error?: string;
+}
+
+/// Does a role's permission list allow the given slug?
+/// - `"*"` in the list means "all permissions" (Super Admin).
+/// - When roleId is null we treat the user as Super Admin (backwards compat).
+export function hasPermission(permissions: string[] | null | undefined, slug: string): boolean {
+  if (!permissions) return true;              // null role_id => Super Admin
+  if (permissions.includes('*')) return true;
+  return permissions.includes(slug);
+}
+
+export async function fetchAdminRoles(): Promise<AdminRole[]> {
+  const { data: roles, error } = await supabase
+    .from('admin_roles')
+    .select('id, name, description, permissions, is_system, created_at')
+    .order('is_system', { ascending: false })
+    .order('name', { ascending: true });
+  if (error) { console.warn('fetchAdminRoles error:', error); return []; }
+
+  // Count members per role (single query).
+  const { data: members } = await supabase
+    .from('profiles')
+    .select('admin_role_id')
+    .eq('role', 'admin');
+  const countMap: Record<string, number> = {};
+  for (const m of members ?? []) {
+    const id = (m.admin_role_id as string | null) ?? '__super__';
+    countMap[id] = (countMap[id] ?? 0) + 1;
+  }
+
+  return (roles ?? []).map((r: Record<string, unknown>) => {
+    const perms = Array.isArray(r.permissions)
+      ? (r.permissions as string[])
+      : typeof r.permissions === 'string'
+        ? (JSON.parse(r.permissions as string) as string[])
+        : [];
+    return {
+      id: r.id as string,
+      name: r.name as string,
+      description: (r.description as string) ?? null,
+      permissions: perms,
+      isSystem: !!r.is_system,
+      createdAt: r.created_at as string,
+      memberCount: countMap[r.id as string] ?? 0,
+    };
+  });
+}
+
+export async function createAdminRole(input: {
+  name: string;
+  description: string;
+  permissions: string[];
+}): Promise<{ ok: boolean; id?: string; error?: string }> {
+  const { data: { user } } = await supabase.auth.getUser();
+  const { data, error } = await supabase
+    .from('admin_roles')
+    .insert({
+      name: input.name.trim(),
+      description: input.description.trim() || null,
+      permissions: input.permissions,
+      is_system: false,
+      created_by: user?.id ?? null,
+    })
+    .select('id')
+    .single();
+  if (error) return { ok: false, error: error.message };
+  return { ok: true, id: data.id as string };
+}
+
+export async function updateAdminRole(
+  roleId: string,
+  patch: { name?: string; description?: string; permissions?: string[] },
+): Promise<{ ok: boolean; error?: string }> {
+  const update: Record<string, unknown> = { updated_at: new Date().toISOString() };
+  if (patch.name !== undefined) update.name = patch.name.trim();
+  if (patch.description !== undefined) update.description = patch.description.trim() || null;
+  if (patch.permissions !== undefined) update.permissions = patch.permissions;
+  const { error } = await supabase.from('admin_roles').update(update).eq('id', roleId);
+  if (error) return { ok: false, error: error.message };
+  return { ok: true };
+}
+
+export async function deleteAdminRole(roleId: string): Promise<{ ok: boolean; error?: string }> {
+  // Refuse if any admin still has this role.
+  const { count } = await supabase
+    .from('profiles')
+    .select('id', { count: 'exact', head: true })
+    .eq('admin_role_id', roleId);
+  if ((count ?? 0) > 0) {
+    return { ok: false, error: `Rol wordt nog gebruikt door ${count} admin(s). Wijs eerst een andere rol toe.` };
+  }
+  const { error } = await supabase.from('admin_roles').delete().eq('id', roleId).eq('is_system', false);
+  if (error) return { ok: false, error: error.message };
+  return { ok: true };
+}
+
+export async function fetchAdminUsers(): Promise<AdminUser[]> {
+  const { data: admins, error } = await supabase
+    .from('profiles')
+    .select('id, email, first_name, last_name, phone, admin_role_id, created_at')
+    .eq('role', 'admin')
+    .order('created_at', { ascending: false });
+  if (error) { console.warn('fetchAdminUsers error:', error); return []; }
+
+  // Resolve role names in a single query.
+  const roleIds = Array.from(new Set((admins ?? [])
+    .map(a => a.admin_role_id as string | null)
+    .filter(Boolean))) as string[];
+  const roleNameMap: Record<string, string> = {};
+  if (roleIds.length) {
+    const { data: roles } = await supabase.from('admin_roles').select('id, name').in('id', roleIds);
+    for (const r of roles ?? []) roleNameMap[r.id as string] = r.name as string;
+  }
+
+  const active: AdminUser[] = (admins ?? []).map(a => ({
+    id: a.id as string,
+    email: (a.email as string) ?? '',
+    firstName: (a.first_name as string) ?? '',
+    lastName: (a.last_name as string) ?? '',
+    phone: (a.phone as string) ?? null,
+    createdAt: a.created_at as string,
+    roleId: (a.admin_role_id as string) ?? null,
+    roleName: (a.admin_role_id ? roleNameMap[a.admin_role_id as string] : null) ?? 'Super Admin',
+    status: 'active' as const,
+  }));
+
+  // Pending invites (no auth user yet).
+  const { data: pending } = await supabase
+    .from('admin_invites')
+    .select('id, email, admin_role_id, created_at')
+    .eq('status', 'pending');
+  const pendingUsers: AdminUser[] = (pending ?? []).map(p => ({
+    id: `invite:${p.id}`,
+    email: p.email as string,
+    firstName: '',
+    lastName: '',
+    phone: null,
+    createdAt: p.created_at as string,
+    roleId: (p.admin_role_id as string) ?? null,
+    roleName: (p.admin_role_id ? roleNameMap[p.admin_role_id as string] : null) ?? 'Super Admin',
+    status: 'pending' as const,
+  }));
+
+  return [...active, ...pendingUsers];
+}
+
+/// Assign / re-assign a role to an existing admin user.
+export async function updateAdminUserRole(userId: string, roleId: string | null): Promise<{ ok: boolean; error?: string }> {
+  const { error } = await supabase
+    .from('profiles')
+    .update({ admin_role_id: roleId, updated_at: new Date().toISOString() })
+    .eq('id', userId)
+    .eq('role', 'admin');
+  if (error) return { ok: false, error: error.message };
+  return { ok: true };
+}
+
+/// Demote an admin back to a normal user (removes admin access without deleting
+/// the account, so their linked history is preserved).
+export async function revokeAdminAccess(userId: string): Promise<{ ok: boolean; error?: string }> {
+  const { error } = await supabase
+    .from('profiles')
+    .update({ role: 'parent', admin_role_id: null, updated_at: new Date().toISOString() })
+    .eq('id', userId);
+  if (error) return { ok: false, error: error.message };
+  return { ok: true };
+}
+
+/// Create a new admin user directly via the admin-create edge function (or a
+/// fallback that just records the invite). Returns the temporary password so
+/// Walter can hand it to the new admin.
+export async function inviteAdminUser(input: {
+  email: string;
+  firstName: string;
+  lastName: string;
+  roleId: string | null;
+}): Promise<AdminInviteResult> {
+  const email = input.email.trim().toLowerCase();
+  if (!email || !email.includes('@')) return { ok: false, error: 'Ongeldig e-mailadres.' };
+
+  // Generate a strong temp password.
+  const tempPassword = generateTempPassword();
+
+  // Try the edge function first (creates the auth user + profile in one call).
+  try {
+    const { data: edgeRes, error: edgeErr } = await supabase.functions.invoke('admin-create-user', {
+      body: {
+        email,
+        password: tempPassword,
+        first_name: input.firstName.trim(),
+        last_name: input.lastName.trim(),
+        role: 'admin',
+        admin_role_id: input.roleId,
+      },
+    });
+    if (!edgeErr && (edgeRes as { ok?: boolean } | null)?.ok) {
+      return { ok: true, temporaryPassword: tempPassword };
+    }
+    // Fall through to invite-record fallback.
+  } catch { /* edge function may not be deployed yet */ }
+
+  // Fallback: record the invite so Walter can share it manually.
+  const { data: { user } } = await supabase.auth.getUser();
+  const { error } = await supabase.from('admin_invites').insert({
+    email,
+    admin_role_id: input.roleId,
+    invited_by: user?.id ?? null,
+    status: 'pending',
+    temporary_password: tempPassword,
+  });
+  if (error) return { ok: false, error: error.message };
+  return { ok: true, temporaryPassword: tempPassword };
+}
+
+export async function revokeAdminInvite(inviteId: string): Promise<{ ok: boolean; error?: string }> {
+  const realId = inviteId.startsWith('invite:') ? inviteId.slice('invite:'.length) : inviteId;
+  const { error } = await supabase
+    .from('admin_invites')
+    .update({ status: 'revoked' })
+    .eq('id', realId);
+  if (error) return { ok: false, error: error.message };
+  return { ok: true };
+}
+
+function generateTempPassword(): string {
+  const alpha = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+  const nums = '23456789';
+  const symbols = '!@#$%&*';
+  const all = alpha + nums + symbols;
+  const buf = new Uint32Array(14);
+  crypto.getRandomValues(buf);
+  let out = '';
+  // Guarantee at least one of each class.
+  out += alpha[buf[0] % alpha.length];
+  out += alpha[buf[1] % alpha.length].toUpperCase();
+  out += nums[buf[2] % nums.length];
+  out += symbols[buf[3] % symbols.length];
+  for (let i = 4; i < buf.length; i++) out += all[buf[i] % all.length];
+  return out;
+}
