@@ -1822,6 +1822,54 @@ export async function updateAdminUserRole(userId: string, roleId: string | null)
   return { ok: true };
 }
 
+/// Edit an admin's profile fields (name, phone, city). Email cannot be
+/// changed here because it is anchored to the auth user.
+export async function updateAdminUserProfile(
+  userId: string,
+  patch: { firstName?: string; lastName?: string; phone?: string; city?: string },
+): Promise<{ ok: boolean; error?: string }> {
+  const update: Record<string, unknown> = { updated_at: new Date().toISOString() };
+  if (patch.firstName !== undefined) update.first_name = patch.firstName.trim();
+  if (patch.lastName !== undefined) update.last_name = patch.lastName.trim();
+  if (patch.phone !== undefined) update.phone = patch.phone.trim() || null;
+  if (patch.city !== undefined) update.city = patch.city.trim() || null;
+  const { error } = await supabase.from('profiles').update(update).eq('id', userId);
+  if (error) return { ok: false, error: error.message };
+  return { ok: true };
+}
+
+/// Send a password reset email to the admin — uses Supabase's built-in flow so
+/// the admin lands on the "Reset password" screen from the email link. Works
+/// entirely through the anon key; no service role required.
+export async function resetAdminPassword(email: string): Promise<{ ok: boolean; error?: string }> {
+  const redirectTo = typeof window !== 'undefined'
+    ? `${window.location.origin}/reset-password`
+    : undefined;
+  const { error } = await supabase.auth.resetPasswordForEmail(email, redirectTo ? { redirectTo } : undefined);
+  if (error) return { ok: false, error: error.message };
+  return { ok: true };
+}
+
+/// Generate a new temporary password for an admin. Delegates to the
+/// admin-reset-password edge function (which uses the service-role key). Falls
+/// back to sending a reset email when the function is not available so Walter
+/// never sees a dead action.
+export async function generateAdminTempPassword(userId: string, email: string): Promise<AdminInviteResult> {
+  const tempPassword = generateTempPassword();
+  try {
+    const { data, error } = await supabase.functions.invoke('admin-reset-password', {
+      body: { user_id: userId, new_password: tempPassword },
+    });
+    if (!error && (data as { ok?: boolean } | null)?.ok) {
+      return { ok: true, temporaryPassword: tempPassword };
+    }
+  } catch { /* edge function not deployed — fall through */ }
+  // Fallback: send a self-service reset email.
+  const res = await resetAdminPassword(email);
+  if (!res.ok) return { ok: false, error: res.error };
+  return { ok: true };
+}
+
 /// Demote an admin back to a normal user (removes admin access without deleting
 /// the account, so their linked history is preserved).
 export async function revokeAdminAccess(userId: string): Promise<{ ok: boolean; error?: string }> {
@@ -1829,6 +1877,21 @@ export async function revokeAdminAccess(userId: string): Promise<{ ok: boolean; 
     .from('profiles')
     .update({ role: 'parent', admin_role_id: null, updated_at: new Date().toISOString() })
     .eq('id', userId);
+  if (error) return { ok: false, error: error.message };
+  return { ok: true };
+}
+
+/// Fully delete an admin account (profile row + auth user). Delegates to the
+/// admin-delete-user edge function so the auth user is also removed. Falls
+/// back to profile deletion when the function is missing.
+export async function deleteAdminAccount(userId: string): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const { data, error } = await supabase.functions.invoke('admin-delete-user', {
+      body: { user_id: userId },
+    });
+    if (!error && (data as { ok?: boolean } | null)?.ok) return { ok: true };
+  } catch { /* fall through */ }
+  const { error } = await supabase.from('profiles').delete().eq('id', userId);
   if (error) return { ok: false, error: error.message };
   return { ok: true };
 }

@@ -52,22 +52,22 @@ export function AdminRolesView({ onNavigateBack, showToast }: Props) {
   return (
     <div>
       {/* ── Header ─────────────────────────────────────────────────── */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-6">
-        <div className="flex items-center gap-3">
+      <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3 mb-4 sm:mb-6">
+        <div className="flex items-start gap-2 sm:gap-3 min-w-0">
           <button onClick={onNavigateBack}
-                  className="p-2 rounded-lg hover:bg-[#F4F7FC] text-[#6B7B94]">
+                  className="p-2 rounded-lg hover:bg-[#F4F7FC] text-[#6B7B94] shrink-0 mt-0.5">
             <ArrowLeft size={18} />
           </button>
-          <div>
+          <div className="min-w-0">
             <h1 className="text-[#1A1A2E]" style={{ fontSize: 22, fontWeight: 700 }}>Rollen &amp; rechten</h1>
-            <p className="text-[#6B7B94] mt-0.5" style={{ fontSize: 13 }}>
+            <p className="text-[#6B7B94] mt-0.5 hidden sm:block" style={{ fontSize: 13 }}>
               Definieer welke acties elke rol mag uitvoeren.
             </p>
           </div>
         </div>
         <button
           onClick={() => setShowCreate(true)}
-          className="px-4 py-2.5 rounded-xl text-white text-sm font-semibold flex items-center gap-2"
+          className="w-full sm:w-auto px-4 py-2.5 rounded-xl text-white text-sm font-semibold flex items-center justify-center gap-2 whitespace-nowrap"
           style={{ background: 'linear-gradient(135deg, #FF5C00 0%, #F5A623 100%)' }}>
           <Plus size={16} /> Nieuwe rol
         </button>
@@ -77,7 +77,7 @@ export function AdminRolesView({ onNavigateBack, showToast }: Props) {
       {loading ? (
         <div className="p-12 text-center text-[#A0AEC0]">Laden…</div>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-4">
           {roles.map(r => (
             <div key={r.id}
                  className="bg-white rounded-xl border border-[#E8ECF4] p-5 hover:shadow-md transition-shadow cursor-pointer"
@@ -207,13 +207,13 @@ function RoleEditor({ role, onCancel, onSaved, showToast }: {
   return (
     <div>
       {/* Header */}
-      <div className="flex items-start justify-between gap-3 mb-6">
-        <div className="flex items-center gap-3">
-          <button onClick={onCancel} className="p-2 rounded-lg hover:bg-[#F4F7FC] text-[#6B7B94]">
+      <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3 mb-4 sm:mb-6">
+        <div className="flex items-start gap-2 sm:gap-3 min-w-0">
+          <button onClick={onCancel} className="p-2 rounded-lg hover:bg-[#F4F7FC] text-[#6B7B94] shrink-0 mt-0.5">
             <ArrowLeft size={18} />
           </button>
-          <div>
-            <h1 className="text-[#1A1A2E]" style={{ fontSize: 22, fontWeight: 700 }}>
+          <div className="min-w-0">
+            <h1 className="text-[#1A1A2E] truncate" style={{ fontSize: 22, fontWeight: 700 }}>
               {role.isSystem ? role.name : 'Rol bewerken'}
             </h1>
             <p className="text-[#6B7B94] mt-0.5" style={{ fontSize: 13 }}>
@@ -223,14 +223,14 @@ function RoleEditor({ role, onCancel, onSaved, showToast }: {
             </p>
           </div>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-shrink-0">
           <button onClick={onCancel}
-                  className="px-4 py-2 rounded-xl bg-white border border-[#E8ECF4] text-[#1A1A2E]"
+                  className="flex-1 sm:flex-none px-4 py-2 rounded-xl bg-white border border-[#E8ECF4] text-[#1A1A2E]"
                   style={{ fontSize: 13, fontWeight: 600 }}>
             Annuleren
           </button>
           <button onClick={handleSave} disabled={saving}
-                  className="px-4 py-2 rounded-xl text-white flex items-center gap-2 disabled:opacity-50"
+                  className="flex-1 sm:flex-none px-4 py-2 rounded-xl text-white flex items-center justify-center gap-2 disabled:opacity-50"
                   style={{ fontSize: 13, fontWeight: 600, background: 'linear-gradient(135deg, #FF5C00 0%, #F5A623 100%)' }}>
             <Save size={14} /> {saving ? 'Opslaan…' : 'Opslaan'}
           </button>
