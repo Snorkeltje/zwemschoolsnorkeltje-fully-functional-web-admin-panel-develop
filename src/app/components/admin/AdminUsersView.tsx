@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   Users, UserPlus, Shield, Trash2, Mail, Copy, CheckCircle2, X,
   AlertTriangle, ChevronDown, Clock, Search, Pencil, KeyRound,
@@ -494,49 +495,48 @@ function RowActions({ user, isSelf, onEdit, onReset, onRevoke, onDelete }: {
   onEdit: () => void; onReset: () => void; onRevoke: () => void; onDelete: () => void;
 }) {
   const [open, setOpen] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement>(null);
   return (
-    <div className="relative inline-block">
+    <>
       <button
+        ref={triggerRef}
         onClick={() => setOpen(o => !o)}
         className="p-2 rounded-lg hover:bg-[#F0F4FA] text-[#6B7B94]"
         title="Acties">
         <MoreVertical size={16} />
       </button>
-      {open && (
-        <>
-          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          <div className="absolute z-50 right-0 mt-1 w-56 rounded-xl bg-white border border-[#E8ECF4] shadow-lg py-1"
-               style={{ boxShadow: '0 10px 30px -10px rgba(0,0,0,0.2)' }}>
-            {user.status === 'active' && (
+      <Popover open={open} onClose={() => setOpen(false)} anchor={triggerRef} align="end" width={224}>
+        {user.status === 'active' && (
+          <>
+            <ActionItem icon={Pencil} label="Bewerken"
+                        onClick={() => { setOpen(false); onEdit(); }} />
+            <ActionItem icon={KeyRound} label="Wachtwoord resetten"
+                        onClick={() => { setOpen(false); onReset(); }} />
+            {!isSelf && (
               <>
-                <ActionItem icon={Pencil} label="Bewerken"
-                            onClick={() => { setOpen(false); onEdit(); }} />
-                <ActionItem icon={KeyRound} label="Wachtwoord resetten"
-                            onClick={() => { setOpen(false); onReset(); }} />
-                {!isSelf && (
-                  <>
-                    <div className="h-px bg-[#F0F4FA] my-1" />
-                    <ActionItem icon={Shield} label="Toegang intrekken" color="#9A3412"
-                                onClick={() => { setOpen(false); onRevoke(); }} />
-                    <ActionItem icon={Trash2} label="Definitief verwijderen" color="#E74C3C"
-                                onClick={() => { setOpen(false); onDelete(); }} />
-                  </>
-                )}
+                <div className="h-px bg-[#F0F4FA] my-1" />
+                <ActionItem icon={Shield} label="Toegang intrekken" color="#9A3412"
+                            onClick={() => { setOpen(false); onRevoke(); }} />
+                <ActionItem icon={Trash2} label="Definitief verwijderen" color="#E74C3C"
+                            onClick={() => { setOpen(false); onDelete(); }} />
               </>
             )}
-            {user.status === 'pending' && (
-              <ActionItem icon={Trash2} label="Uitnodiging intrekken" color="#E74C3C"
-                          onClick={() => { setOpen(false); onRevoke(); }} />
+            {isSelf && (
+              <>
+                <div className="h-px bg-[#F0F4FA] my-1" />
+                <div className="px-3 py-2 text-[#A0AEC0]" style={{ fontSize: 11 }}>
+                  Uw eigen account kan niet worden verwijderd.
+                </div>
+              </>
             )}
-            {isSelf && user.status === 'active' && (
-              <div className="px-3 py-2 text-[#A0AEC0]" style={{ fontSize: 11 }}>
-                Uw eigen account kan niet worden verwijderd.
-              </div>
-            )}
-          </div>
-        </>
-      )}
-    </div>
+          </>
+        )}
+        {user.status === 'pending' && (
+          <ActionItem icon={Trash2} label="Uitnodiging intrekken" color="#E74C3C"
+                      onClick={() => { setOpen(false); onRevoke(); }} />
+        )}
+      </Popover>
+    </>
   );
 }
 
@@ -561,10 +561,12 @@ function RolePicker({ current, roles, disabled, onChange }: {
   onChange: (roleId: string | null) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement>(null);
   const currentName = current ? (roles.find(r => r.id === current)?.name ?? 'Onbekend') : 'Super Admin';
   return (
-    <div className="relative inline-block">
+    <>
       <button
+        ref={triggerRef}
         disabled={disabled}
         onClick={() => setOpen(o => !o)}
         className="flex items-center gap-1.5 px-2.5 py-1 rounded-full border border-[#E8ECF4] bg-white text-[#1A1A2E] hover:bg-[#F8FAFC] disabled:opacity-50 disabled:cursor-not-allowed"
@@ -572,33 +574,125 @@ function RolePicker({ current, roles, disabled, onChange }: {
         <Shield size={11} className="text-[#0365C4]" /> {currentName}
         {!disabled && <ChevronDown size={12} className="text-[#A0AEC0]" />}
       </button>
-      {open && (
-        <>
-          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          <div className="absolute z-50 mt-1 w-64 rounded-xl bg-white border border-[#E8ECF4] shadow-lg py-1 max-h-72 overflow-y-auto"
-               style={{ boxShadow: '0 10px 30px -10px rgba(0,0,0,0.2)' }}>
-            <button
-              onClick={() => { onChange(null); setOpen(false); }}
-              className="w-full text-left px-3 py-2 text-[#1A1A2E] hover:bg-[#F8FAFC]" style={{ fontSize: 12 }}>
-              <span className="font-semibold flex items-center gap-1.5"><Shield size={12} className="text-[#0365C4]" /> Super Admin</span>
-              <span className="text-[#A0AEC0] block mt-0.5" style={{ fontSize: 10 }}>Volledige toegang tot alles</span>
-            </button>
-            <div className="h-px bg-[#F0F4FA] my-1" />
-            {roles.map(r => (
-              <button
-                key={r.id}
-                onClick={() => { onChange(r.id); setOpen(false); }}
-                className="w-full text-left px-3 py-2 text-[#1A1A2E] hover:bg-[#F8FAFC]" style={{ fontSize: 12 }}>
-                <span className="font-semibold flex items-center gap-1.5">
-                  <Shield size={12} className={r.isSystem ? 'text-[#0365C4]' : 'text-[#FF5C00]'} /> {r.name}
-                </span>
-                {r.description && <span className="text-[#A0AEC0] block mt-0.5" style={{ fontSize: 10 }}>{r.description}</span>}
-              </button>
-            ))}
-          </div>
-        </>
-      )}
-    </div>
+      <Popover open={open} onClose={() => setOpen(false)} anchor={triggerRef} align="start" width={256} maxHeight={288}>
+        <button
+          onClick={() => { onChange(null); setOpen(false); }}
+          className="w-full text-left px-3 py-2 text-[#1A1A2E] hover:bg-[#F8FAFC]" style={{ fontSize: 12 }}>
+          <span className="font-semibold flex items-center gap-1.5"><Shield size={12} className="text-[#0365C4]" /> Super Admin</span>
+          <span className="text-[#A0AEC0] block mt-0.5" style={{ fontSize: 10 }}>Volledige toegang tot alles</span>
+        </button>
+        <div className="h-px bg-[#F0F4FA] my-1" />
+        {roles.map(r => (
+          <button
+            key={r.id}
+            onClick={() => { onChange(r.id); setOpen(false); }}
+            className="w-full text-left px-3 py-2 text-[#1A1A2E] hover:bg-[#F8FAFC]" style={{ fontSize: 12 }}>
+            <span className="font-semibold flex items-center gap-1.5">
+              <Shield size={12} className={r.isSystem ? 'text-[#0365C4]' : 'text-[#FF5C00]'} /> {r.name}
+            </span>
+            {r.description && <span className="text-[#A0AEC0] block mt-0.5" style={{ fontSize: 10 }}>{r.description}</span>}
+          </button>
+        ))}
+      </Popover>
+    </>
+  );
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+//   Popover — Portal-based floating panel
+//
+//   Renders `children` at document.body so no parent's overflow / z-index
+//   can clip it. Auto-flips above the anchor if there's no room below,
+//   auto-shifts left/right to stay in the viewport, and closes on scroll,
+//   resize, Escape, or outside click.
+// ═════════════════════════════════════════════════════════════════════════════
+
+function Popover({ open, onClose, anchor, align = 'start', width = 224, maxHeight = 360, children }: {
+  open: boolean;
+  onClose: () => void;
+  anchor: React.RefObject<HTMLElement | null>;
+  align?: 'start' | 'end';   // 'start' = left-align to anchor, 'end' = right-align
+  width?: number;
+  maxHeight?: number;
+  children: React.ReactNode;
+}) {
+  const panelRef = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState<{ top: number; left: number; direction: 'down' | 'up' } | null>(null);
+
+  useLayoutEffect(() => {
+    if (!open) { setPos(null); return; }
+    function place() {
+      const btn = anchor.current;
+      if (!btn) return;
+      const rect = btn.getBoundingClientRect();
+      const vpW = window.innerWidth;
+      const vpH = window.innerHeight;
+      const margin = 8;
+
+      // Vertical: prefer below, flip above if not enough room.
+      const spaceBelow = vpH - rect.bottom;
+      const spaceAbove = rect.top;
+      const wantH = Math.min(maxHeight, panelRef.current?.offsetHeight ?? maxHeight);
+      const goUp = spaceBelow < wantH + margin && spaceAbove > spaceBelow;
+      const top = goUp ? rect.top - wantH - 4 : rect.bottom + 4;
+
+      // Horizontal: anchor at start or end, then clamp inside viewport.
+      let left = align === 'end' ? rect.right - width : rect.left;
+      left = Math.max(margin, Math.min(left, vpW - width - margin));
+
+      setPos({ top, left, direction: goUp ? 'up' : 'down' });
+    }
+    place();
+
+    // Close / reposition on user activity.
+    const onScroll = () => onClose();
+    const onResize = () => place();
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('scroll', onScroll, true);
+    window.addEventListener('resize', onResize);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('scroll', onScroll, true);
+      window.removeEventListener('resize', onResize);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [open, anchor, align, width, maxHeight, onClose]);
+
+  // Outside-click detection — bind after paint so the click that opened the
+  // popover doesn't immediately close it.
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      const target = e.target as Node;
+      if (panelRef.current?.contains(target)) return;
+      if (anchor.current?.contains(target)) return;
+      onClose();
+    };
+    const id = window.setTimeout(() => document.addEventListener('mousedown', onDown), 0);
+    return () => {
+      window.clearTimeout(id);
+      document.removeEventListener('mousedown', onDown);
+    };
+  }, [open, anchor, onClose]);
+
+  if (!open || !pos) return null;
+  return createPortal(
+    <div
+      ref={panelRef}
+      role="menu"
+      className="rounded-xl bg-white border border-[#E8ECF4] py-1 overflow-y-auto"
+      style={{
+        position: 'fixed',
+        top: pos.top,
+        left: pos.left,
+        width,
+        maxHeight,
+        zIndex: 100,
+        boxShadow: '0 12px 32px -8px rgba(0,0,0,0.22)',
+      }}>
+      {children}
+    </div>,
+    document.body,
   );
 }
 
