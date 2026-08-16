@@ -9,6 +9,7 @@ import { ReservationDetailView } from '../../components/admin/ReservationDetailV
 import { ProfileView } from '../../components/admin/ProfileView';
 import { AdminUsersView } from '../../components/admin/AdminUsersView';
 import { AdminRolesView } from '../../components/admin/AdminRolesView';
+import { WaitlistManagement } from '../../components/admin/WaitlistManagement';
 import {
   Users, Calendar, FileText, CreditCard, DollarSign, TrendingUp, TrendingDown,
   ArrowUpRight, ArrowDownRight, Eye, Edit2, Trash2, Plus, Search, Filter,
@@ -3040,8 +3041,11 @@ export function AdminDashboardScreen() {
         </>
       )}
 
-      {/* ═══════ WAITLIST — live ═══════ */}
-      {view === 'waitlist' && (() => {
+      {/* ═══════ WAITLIST — Phase 2 Advanced (2026-08-16) ═══════ */}
+      {view === 'waitlist' && <WaitlistManagement showToast={showToast} />}
+
+      {/* Legacy view kept for reference — replaced by WaitlistManagement above */}
+      {false && view === 'waitlist' && (() => {
         // Walter 2026-05-18 — strict Phase 1 scope per Sami's May 6 agreement:
         // per-location list with positions + slot-interest registration + 24h
         // challenge. Search/filter/CSV/drag-reorder are Phase 2.

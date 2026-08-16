@@ -1968,3 +1968,516 @@ function generateTempPassword(): string {
   for (let i = 4; i < buf.length; i++) out += all[buf[i] % all.length];
   return out;
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+//   PHASE 2 — ADVANCED WAITLIST SYSTEM
+//   Full replacement for Walter's i-Reserve waiting list. Requires the
+//   `seed_waitlist_phase2.sql` + `waitlist_phase2_advanced.sql` migrations.
+// ═══════════════════════════════════════════════════════════════════════════
+
+export type WaitlistListType = 'general' | 'official' | 'mini_survival';
+export type WaitlistStatus = 'no_status' | 'active' | 'paused' | 'cancelled' | 'placed';
+export type WaitlistConfirmationStatus = 'pending' | 'confirmed' | 'declined' | 'expired';
+export type WaitlistLessonType =
+  | 'no_preference' | 'one_on_one' | 'one_in_two' | 'one_in_two_own_couple'
+  | 'one_in_three' | 'one_in_three_own_couple' | 'one_in_four' | 'one_in_five'
+  | 'baarn_one_in_six' | 'survival_swimming';
+
+/// Human-readable Dutch labels for each lesson type — matches the labels
+/// Walter uses in his current i-Reserve system.
+export const WAITLIST_LESSON_TYPE_LABELS: Record<WaitlistLessonType, string> = {
+  no_preference:            'Geen voorkeur',
+  one_on_one:               '1-op-1',
+  one_in_two:               '1-op-2',
+  one_in_two_own_couple:    '1-op-2 (Eigen koppel)',
+  one_in_three:             '1-op-3',
+  one_in_three_own_couple:  '1-op-3 (Eigen koppel)',
+  one_in_four:              '1-op-4',
+  one_in_five:              '1-op-5',
+  baarn_one_in_six:         'Baarn (1-op-6)',
+  survival_swimming:        'Survival zwemmen',
+};
+
+/// Day-of-week keys used inside the availability_grid JSON.
+export type AvailabilityDay = 'sunday' | 'monday' | 'tuesday' | 'wednesday' | 'thursday' | 'friday' | 'saturday';
+export type AvailabilityWindow = [string, string]; // ['HH:MM', 'HH:MM']
+export type AvailabilityGrid = Partial<Record<AvailabilityDay, AvailabilityWindow[]>>;
+
+export interface AdvancedWaitlistEntry {
+  id: string;
+  parentId: string;
+  childId: string;
+  // Priority anchors
+  generalRegistrationDate: string;
+  officialRegistrationDate: string | null;
+  listType: WaitlistListType;
+  status: WaitlistStatus;
+  confirmationStatus: WaitlistConfirmationStatus;
+  // Child + parent
+  childFirstName: string;
+  childLastName: string;
+  childDateOfBirth: string | null;
+  parentFirstName: string;
+  parentLastName: string;
+  parentEmail: string;
+  parentPhone: string | null;
+  // Second child (sibling)
+  secondChildFirstName: string | null;
+  secondChildLastName: string | null;
+  secondChildDob: string | null;
+  secondChildParentPhone: string | null;
+  secondChildParentEmail: string | null;
+  // Preferences
+  preferredLocationIds: string[];
+  preferredLocationNames: string[];
+  lessonType: WaitlistLessonType | null;
+  waterFreeRating: number | null;
+  availabilityGrid: AvailabilityGrid | null;
+  desiredStartDate: string | null;
+  // Position (per-location within its queue)
+  position: number;
+  // Payment
+  registrationFeePaid: boolean;
+  registrationFeeAmountCents: number;
+  // Notes
+  comment: string | null;
+  internalNote: string | null;
+  // Legacy
+  joinedAt: string;
+}
+
+export interface WaitlistLocation {
+  id: string;
+  name: string;
+  supportsMinsSurvival: boolean;
+  availableLessonTypes: WaitlistLessonType[];
+  totalWaiting: number;
+  totalMiniSurvival: number;
+  totalReady: number;
+}
+
+/// Fetch the list of locations with per-queue counts. Powers the sidebar
+/// / location picker in the admin panel.
+export async function fetchWaitlistLocations(): Promise<WaitlistLocation[]> {
+  const { data: locations } = await supabase
+    .from('locations')
+    .select('id, name, supports_mini_survival')
+    .eq('active', true)
+    .order('name', { ascending: true });
+
+  const locs = (locations ?? []) as { id: string; name: string; supports_mini_survival: boolean }[];
+  if (!locs.length) return [];
+
+  // Per-location lesson types
+  const { data: types } = await supabase
+    .from('location_lesson_types')
+    .select('location_id, lesson_type, enabled')
+    .eq('enabled', true);
+  const typeMap = new Map<string, WaitlistLessonType[]>();
+  for (const t of types ?? []) {
+    const arr = typeMap.get(t.location_id as string) ?? [];
+    arr.push(t.lesson_type as WaitlistLessonType);
+    typeMap.set(t.location_id as string, arr);
+  }
+
+  // Per-location counts (one query for all entries, aggregated client-side)
+  const { data: entries } = await supabase
+    .from('waitlist')
+    .select('preferred_location_ids, list_type, status')
+    .eq('confirmation_status', 'confirmed');
+
+  const counts = new Map<string, { waiting: number; miniSurvival: number; ready: number }>();
+  for (const e of entries ?? []) {
+    const locIds = (e.preferred_location_ids as string[]) ?? [];
+    for (const lid of locIds) {
+      const c = counts.get(lid) ?? { waiting: 0, miniSurvival: 0, ready: 0 };
+      if (e.list_type === 'mini_survival') c.miniSurvival++;
+      else if (e.status === 'active' && e.list_type === 'official') c.ready++;
+      else c.waiting++;
+      counts.set(lid, c);
+    }
+  }
+
+  return locs.map(l => {
+    const c = counts.get(l.id) ?? { waiting: 0, miniSurvival: 0, ready: 0 };
+    return {
+      id: l.id,
+      name: l.name,
+      supportsMinsSurvival: !!l.supports_mini_survival,
+      availableLessonTypes: typeMap.get(l.id) ?? [],
+      totalWaiting: c.waiting,
+      totalMiniSurvival: c.miniSurvival,
+      totalReady: c.ready,
+    };
+  });
+}
+
+interface RawWaitlistRow {
+  id: string;
+  parent_id: string;
+  child_id: string;
+  general_registration_date: string | null;
+  official_registration_date: string | null;
+  list_type: string | null;
+  status: string | null;
+  confirmation_status: string | null;
+  lesson_type: string | null;
+  water_free_rating: number | null;
+  availability_grid: unknown;
+  preferred_location_ids: string[] | null;
+  preferred_days: number[] | null;
+  preferred_time_start: string | null;
+  preferred_time_end: string | null;
+  position: number | null;
+  registration_fee_paid: boolean | null;
+  registration_fee_amount_cents: number | null;
+  comment: string | null;
+  internal_note: string | null;
+  second_child_first_name: string | null;
+  second_child_last_name: string | null;
+  second_child_dob: string | null;
+  second_child_parent_phone: string | null;
+  second_child_parent_email: string | null;
+  joined_at: string;
+  profiles: { first_name: string | null; last_name: string | null; email: string | null; phone: string | null } | null;
+  children: { first_name: string | null; last_name: string | null; date_of_birth: string | null } | null;
+}
+
+function mapWaitlistEntry(raw: RawWaitlistRow, locNameMap: Map<string, string>): AdvancedWaitlistEntry {
+  const p = raw.profiles;
+  const c = raw.children;
+  const locIds = raw.preferred_location_ids ?? [];
+  let grid: AvailabilityGrid | null = null;
+  const rawGrid = raw.availability_grid;
+  if (rawGrid && typeof rawGrid === 'object') grid = rawGrid as AvailabilityGrid;
+  else if (typeof rawGrid === 'string') {
+    try { grid = JSON.parse(rawGrid) as AvailabilityGrid; } catch { grid = null; }
+  }
+  return {
+    id: raw.id,
+    parentId: raw.parent_id,
+    childId: raw.child_id,
+    generalRegistrationDate: raw.general_registration_date ?? raw.joined_at,
+    officialRegistrationDate: raw.official_registration_date,
+    listType: (raw.list_type as WaitlistListType) ?? 'general',
+    status: (raw.status as WaitlistStatus) ?? 'no_status',
+    confirmationStatus: (raw.confirmation_status as WaitlistConfirmationStatus) ?? 'pending',
+    childFirstName: c?.first_name ?? '',
+    childLastName: c?.last_name ?? '',
+    childDateOfBirth: c?.date_of_birth ?? null,
+    parentFirstName: p?.first_name ?? '',
+    parentLastName: p?.last_name ?? '',
+    parentEmail: p?.email ?? '',
+    parentPhone: p?.phone ?? null,
+    secondChildFirstName: raw.second_child_first_name,
+    secondChildLastName: raw.second_child_last_name,
+    secondChildDob: raw.second_child_dob,
+    secondChildParentPhone: raw.second_child_parent_phone,
+    secondChildParentEmail: raw.second_child_parent_email,
+    preferredLocationIds: locIds,
+    preferredLocationNames: locIds.map(id => locNameMap.get(id) ?? '?').filter(n => n !== '?'),
+    lessonType: (raw.lesson_type as WaitlistLessonType | null),
+    waterFreeRating: raw.water_free_rating,
+    availabilityGrid: grid,
+    desiredStartDate: raw.joined_at ? raw.joined_at.slice(0, 10) : null,
+    position: raw.position ?? 0,
+    registrationFeePaid: !!raw.registration_fee_paid,
+    registrationFeeAmountCents: raw.registration_fee_amount_cents ?? 3000,
+    comment: raw.comment,
+    internalNote: raw.internal_note,
+    joinedAt: raw.joined_at,
+  };
+}
+
+/// Fetch every waitlist entry for a given location, split by queue.
+/// Queue meaning:
+///   - preferenceList: parents whose child is on the general (under-4) list
+///     and hasn't yet paid €30 — nothing to schedule yet.
+///   - waitingList: parents on the official list, waiting for their spot.
+///   - readyForLessons: parents whose spot has been assigned but not yet
+///     started their first lesson.
+///   - survival: parents on the mini_survival list.
+export interface LocationWaitlistBuckets {
+  preferenceList: AdvancedWaitlistEntry[];
+  waitingList: AdvancedWaitlistEntry[];
+  readyForLessons: AdvancedWaitlistEntry[];
+  survival: AdvancedWaitlistEntry[];
+}
+
+export async function fetchLocationWaitlist(locationId: string): Promise<LocationWaitlistBuckets> {
+  const { data: locs } = await supabase.from('locations').select('id, name');
+  const locNameMap = new Map<string, string>((locs ?? []).map(l => [l.id as string, l.name as string]));
+
+  const { data, error } = await supabase
+    .from('waitlist')
+    .select(`
+      id, parent_id, child_id, general_registration_date, official_registration_date,
+      list_type, status, confirmation_status, lesson_type, water_free_rating,
+      availability_grid, preferred_location_ids, preferred_days,
+      preferred_time_start, preferred_time_end, position,
+      registration_fee_paid, registration_fee_amount_cents,
+      comment, internal_note,
+      second_child_first_name, second_child_last_name, second_child_dob,
+      second_child_parent_phone, second_child_parent_email, joined_at,
+      profiles:parent_id ( first_name, last_name, email, phone ),
+      children:child_id ( first_name, last_name, date_of_birth )
+    `)
+    .contains('preferred_location_ids', [locationId])
+    .order('general_registration_date', { ascending: true });
+
+  if (error) {
+    console.warn('fetchLocationWaitlist error:', error);
+    return { preferenceList: [], waitingList: [], readyForLessons: [], survival: [] };
+  }
+
+  const entries = (data ?? []).map(r => mapWaitlistEntry(r as unknown as RawWaitlistRow, locNameMap));
+  const buckets: LocationWaitlistBuckets = {
+    preferenceList: [], waitingList: [], readyForLessons: [], survival: [],
+  };
+  for (const e of entries) {
+    if (e.listType === 'mini_survival') buckets.survival.push(e);
+    else if (e.status === 'placed') buckets.readyForLessons.push(e);
+    else if (e.listType === 'official' && e.confirmationStatus === 'confirmed') buckets.waitingList.push(e);
+    else buckets.preferenceList.push(e);
+  }
+  // Assign 1-indexed position within each bucket, oldest first.
+  for (const bucket of Object.values(buckets)) {
+    bucket.forEach((e, i) => { e.position = i + 1; });
+  }
+  return buckets;
+}
+
+/// Persist edits from the admin edit form.
+export interface WaitlistEntryPatch {
+  listType?: WaitlistListType;
+  status?: WaitlistStatus;
+  lessonType?: WaitlistLessonType | null;
+  preferredDays?: number[];
+  waterFreeRating?: number | null;
+  availabilityGrid?: AvailabilityGrid | null;
+  comment?: string | null;
+  internalNote?: string | null;
+  secondChildFirstName?: string | null;
+  secondChildLastName?: string | null;
+  secondChildDob?: string | null;
+  secondChildParentPhone?: string | null;
+  secondChildParentEmail?: string | null;
+  desiredStartDate?: string | null;
+  waitingSince?: string | null;
+}
+
+export async function updateWaitlistEntry(id: string, patch: WaitlistEntryPatch): Promise<{ ok: boolean; error?: string }> {
+  const update: Record<string, unknown> = {};
+  if (patch.listType !== undefined) update.list_type = patch.listType;
+  if (patch.status !== undefined) update.status = patch.status;
+  if (patch.lessonType !== undefined) update.lesson_type = patch.lessonType;
+  if (patch.preferredDays !== undefined) update.preferred_days = patch.preferredDays;
+  if (patch.waterFreeRating !== undefined) update.water_free_rating = patch.waterFreeRating;
+  if (patch.availabilityGrid !== undefined) update.availability_grid = patch.availabilityGrid;
+  if (patch.comment !== undefined) update.comment = patch.comment;
+  if (patch.internalNote !== undefined) update.internal_note = patch.internalNote;
+  if (patch.secondChildFirstName !== undefined) update.second_child_first_name = patch.secondChildFirstName;
+  if (patch.secondChildLastName !== undefined) update.second_child_last_name = patch.secondChildLastName;
+  if (patch.secondChildDob !== undefined) update.second_child_dob = patch.secondChildDob;
+  if (patch.secondChildParentPhone !== undefined) update.second_child_parent_phone = patch.secondChildParentPhone;
+  if (patch.secondChildParentEmail !== undefined) update.second_child_parent_email = patch.secondChildParentEmail;
+  if (patch.waitingSince !== undefined) update.joined_at = patch.waitingSince;
+  const { error } = await supabase.from('waitlist').update(update).eq('id', id);
+  if (error) return { ok: false, error: error.message };
+  return { ok: true };
+}
+
+/// Flip an entry to the survival list (or back to preference / official).
+export async function convertWaitlistEntryType(id: string, listType: WaitlistListType): Promise<{ ok: boolean; error?: string }> {
+  const { error } = await supabase.from('waitlist').update({ list_type: listType }).eq('id', id);
+  if (error) return { ok: false, error: error.message };
+  return { ok: true };
+}
+
+/// Open a new slot in the queue (called from the instructor UI when a child
+/// finishes their diploma or leaves the program). Fires the matching engine
+/// in the background via an edge function.
+export async function openWaitlistSlot(input: {
+  locationId: string;
+  dayOfWeek: number;
+  slotTime: string;   // 'HH:MM'
+  lessonType: WaitlistLessonType;
+  freedByChildId?: string;
+  freedReason?: 'diploma_b_completed' | 'left_program' | 'manual_admin' | 'cancellation';
+  notes?: string;
+}): Promise<{ ok: boolean; openingId?: string; error?: string }> {
+  const { data, error } = await supabase.rpc('waitlist_open_slot', {
+    p_location_id: input.locationId,
+    p_day_of_week: input.dayOfWeek,
+    p_slot_time: input.slotTime,
+    p_lesson_type: input.lessonType,
+    p_freed_by_child_id: input.freedByChildId ?? null,
+    p_freed_reason: input.freedReason ?? 'manual_admin',
+    p_notes: input.notes ?? null,
+  });
+  if (error) return { ok: false, error: error.message };
+
+  // Kick off matching in the background (edge function). Non-fatal on error.
+  const openingId = data as string;
+  try {
+    await supabase.functions.invoke('waitlist-match-and-offer', { body: { opening_id: openingId } });
+  } catch { /* the cron will pick it up */ }
+  return { ok: true, openingId };
+}
+
+/// Slot openings — feed for the admin dashboard "recent activity" widget.
+export interface WaitlistSlotOpening {
+  id: string;
+  locationId: string;
+  locationName: string;
+  dayOfWeek: number;
+  slotTime: string;
+  lessonType: WaitlistLessonType;
+  freedReason: string | null;
+  detectedAt: string;
+  status: 'pending' | 'matched' | 'filled' | 'no_matches' | 'released';
+  filledByWaitlistId: string | null;
+  notes: string | null;
+  offerCount: number;
+}
+
+export async function fetchWaitlistSlotOpenings(limit: number = 50): Promise<WaitlistSlotOpening[]> {
+  const { data } = await supabase
+    .from('waitlist_slot_openings')
+    .select(`
+      id, location_id, day_of_week, slot_time, lesson_type, freed_reason,
+      detected_at, status, filled_by_waitlist_id, notes,
+      locations:location_id ( name )
+    `)
+    .order('detected_at', { ascending: false })
+    .limit(limit);
+
+  const rows = (data ?? []) as Record<string, unknown>[];
+  const ids = rows.map(r => r.id as string);
+  const countByOpening = new Map<string, number>();
+  if (ids.length) {
+    const { data: offers } = await supabase
+      .from('waitlist_slot_offers')
+      .select('id');
+    // Offers table doesn't currently link back to opening id — count is 0 until wired.
+    void offers;
+  }
+
+  return rows.map(r => {
+    const loc = r.locations as { name?: string } | null;
+    return {
+      id: r.id as string,
+      locationId: r.location_id as string,
+      locationName: loc?.name ?? '?',
+      dayOfWeek: r.day_of_week as number,
+      slotTime: r.slot_time as string,
+      lessonType: (r.lesson_type as WaitlistLessonType),
+      freedReason: (r.freed_reason as string | null),
+      detectedAt: r.detected_at as string,
+      status: (r.status as WaitlistSlotOpening['status']),
+      filledByWaitlistId: (r.filled_by_waitlist_id as string | null),
+      notes: (r.notes as string | null),
+      offerCount: countByOpening.get(r.id as string) ?? 0,
+    };
+  });
+}
+
+/// Slot offers — used both on the admin "active offers" view and on the
+/// parent invitation screen inside the mobile app.
+export interface WaitlistSlotOffer {
+  id: string;
+  waitlistId: string;
+  parentName: string;
+  childName: string;
+  locationName: string;
+  dayOfWeek: number;
+  slotTime: string;
+  offeredAt: string;
+  expiresAt: string;
+  response: 'pending' | 'accepted' | 'declined' | 'expired' | 'superseded' | null;
+  respondedAt: string | null;
+  priorityRank: number;
+}
+
+export async function fetchActiveSlotOffers(): Promise<WaitlistSlotOffer[]> {
+  const { data } = await supabase
+    .from('waitlist_slot_offers')
+    .select(`
+      id, waitlist_id, day_of_week, slot_time, offered_at, expires_at,
+      response, responded_at, priority_rank, location_id,
+      locations:location_id ( name ),
+      waitlist:waitlist_id (
+        profiles:parent_id ( first_name, last_name ),
+        children:child_id ( first_name, last_name )
+      )
+    `)
+    .in('response', ['pending', 'accepted'])
+    .order('offered_at', { ascending: false });
+
+  return (data ?? []).map((o: Record<string, unknown>) => {
+    const w = o.waitlist as { profiles?: { first_name?: string; last_name?: string } | null; children?: { first_name?: string; last_name?: string } | null } | null;
+    const loc = o.locations as { name?: string } | null;
+    return {
+      id: o.id as string,
+      waitlistId: o.waitlist_id as string,
+      parentName: `${w?.profiles?.first_name ?? ''} ${w?.profiles?.last_name ?? ''}`.trim() || '—',
+      childName: `${w?.children?.first_name ?? ''} ${w?.children?.last_name ?? ''}`.trim() || '—',
+      locationName: loc?.name ?? '—',
+      dayOfWeek: o.day_of_week as number,
+      slotTime: o.slot_time as string,
+      offeredAt: o.offered_at as string,
+      expiresAt: o.expires_at as string,
+      response: (o.response as WaitlistSlotOffer['response']),
+      respondedAt: (o.responded_at as string | null),
+      priorityRank: o.priority_rank as number,
+    };
+  });
+}
+
+/// Migration dashboard — track how many of the 1,236 legacy entries have
+/// confirmed their spot in the new system.
+export interface WaitlistMigrationStats {
+  total: number;
+  imported: number;
+  emailSent: number;
+  confirmed: number;
+  expired: number;
+  failed: number;
+  lastBatch: string | null;
+}
+
+export async function fetchMigrationStats(): Promise<WaitlistMigrationStats> {
+  const { data } = await supabase
+    .from('waitlist_migration_log')
+    .select('status, migration_batch');
+  const rows = (data ?? []) as { status: string; migration_batch: string }[];
+  const stats: WaitlistMigrationStats = {
+    total: rows.length,
+    imported: 0, emailSent: 0, confirmed: 0, expired: 0, failed: 0, lastBatch: null,
+  };
+  const batches = new Set<string>();
+  for (const r of rows) {
+    batches.add(r.migration_batch);
+    if (r.status === 'imported')    stats.imported++;
+    if (r.status === 'email_sent')  stats.emailSent++;
+    if (r.status === 'confirmed')   stats.confirmed++;
+    if (r.status === 'expired')     stats.expired++;
+    if (r.status === 'failed')      stats.failed++;
+  }
+  const batchArr = Array.from(batches).sort();
+  stats.lastBatch = batchArr.length ? batchArr[batchArr.length - 1] : null;
+  return stats;
+}
+
+/// Resend a migration confirmation email to a single legacy parent.
+export async function resendMigrationEmail(migrationLogId: string): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const { error } = await supabase.functions.invoke('waitlist-migration-send-emails', {
+      body: { migration_log_id: migrationLogId },
+    });
+    if (error) return { ok: false, error: error.message };
+  } catch (e) {
+    return { ok: false, error: (e as Error).message };
+  }
+  return { ok: true };
+}
